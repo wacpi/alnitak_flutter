@@ -6,7 +6,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:audio_session/audio_session.dart';
-import '../services/hls_service.dart';
+import '../services/video_stream_service.dart';
+import '../services/cache_service.dart';
 import '../services/history_service.dart';
 import '../services/logger_service.dart';
 import '../models/data_source.dart';
@@ -18,7 +19,8 @@ import '../utils/quality_utils.dart';
 import '../main.dart' show audioHandler;
 
 class VideoPlayerController extends ChangeNotifier {
-  final HlsService _hlsService = HlsService();
+  final VideoStreamService _streamService = VideoStreamService();
+  final CacheService _cacheService = CacheService();
   final LoggerService _logger = LoggerService.instance;
   Player? _player;
   VideoController? _videoController;
@@ -65,6 +67,8 @@ class VideoPlayerController extends ChangeNotifier {
   // ============ 内部状态 ============
   int? _currentResourceId;
   bool _isDisposed = false;
+  // ignore: prefer_final_fields - 会在 dispose 过程中改变值
+  bool _isDisposing = false; // 正在 dispose 中，防止回调在清理时触发
   bool _hasTriggeredCompletion = false;
   bool _hasJustCompleted = false; // 刚播放完毕，用于区分循环重播
   bool _isInitializing = false;
@@ -238,7 +242,7 @@ class VideoPlayerController extends ChangeNotifier {
       if (!_settingsLoaded) await _loadSettings();
 
       // 仿 pili_plus：一次性获取所有清晰度的 DASH 数据
-      final manifest = await _hlsService.getDashManifest(resourceId);
+      final manifest = await _streamService.getDashManifest(resourceId);
       _dashManifest = manifest;
       _supportsDash = manifest.supportsDash;
       availableQualities.value = manifest.qualities;
@@ -255,10 +259,9 @@ class VideoPlayerController extends ChangeNotifier {
         if (cached == null) throw Exception('DASH 数据获取失败');
         dataSource = cached;
       } else {
-        dataSource = await _hlsService.getDataSource(
+        dataSource = await _streamService.getM3u8DataSource(
           resourceId,
           currentQuality.value!,
-          supportsDash: false,
         );
       }
 
@@ -537,6 +540,8 @@ class VideoPlayerController extends ChangeNotifier {
       }),
 
       _player!.stream.completed.listen((completed) {
+        if (_isDisposed || _isDisposing) return;
+        
         if (completed && !_hasTriggeredCompletion && !_isSeeking && !isSwitchingQuality.value) {
           // 断网假完成检测：HLS 加载不到后续 ts 分片时 mpv 会发出 completed=true，
           // 但实际并没有播放到结尾。用播放进度比例判断：超过 90% 视为真正结束。
@@ -558,6 +563,9 @@ class VideoPlayerController extends ChangeNotifier {
           _hasTriggeredCompletion = true;
           _hasJustCompleted = true;
 
+          // 触发播放结束回调
+          onVideoEnd?.call();
+
           if (loopMode.value == LoopMode.on) {
             // 循环模式（参考 pili_plus）：play(repeat:true) 原子 seek+play
             _hasTriggeredCompletion = false;
@@ -572,6 +580,7 @@ class VideoPlayerController extends ChangeNotifier {
       }),
 
       _player!.stream.position.listen((position) {
+        if (_isDisposed || _isDisposing) return;
         if (_isSeeking) return;
         // 切换清晰度期间忽略 position=0 的跳变（open 重置导致）
         if (isSwitchingQuality.value && position.inSeconds <= 1) return;
@@ -583,6 +592,11 @@ class VideoPlayerController extends ChangeNotifier {
 
         if (position.inSeconds <= 1 && _hasJustCompleted) {
           _hasJustCompleted = false;
+        }
+
+        // 调试：打印音视频 PTS 状态（每10秒一次）
+        if (position.inSeconds % 10 == 0 && position.inSeconds > 0) {
+          _logPtsState();
         }
 
         _updatePositionState(position);
@@ -719,14 +733,13 @@ class VideoPlayerController extends ChangeNotifier {
     }
     // DASH 缓存过期或缺失，重新获取
     if (_supportsDash) {
-      _dashManifest = await _hlsService.getDashManifest(_currentResourceId!);
+      _dashManifest = await _streamService.getDashManifest(_currentResourceId!);
       availableQualities.value = _dashManifest!.qualities;
       final cached = _dashManifest!.getDataSource(quality);
       if (cached != null) return cached;
     }
     // 最终回退：旧资源 m3u8 或 DASH 缓存里没有该清晰度
-    return _hlsService.getDataSource(
-      _currentResourceId!, quality, supportsDash: _supportsDash);
+    return _streamService.getM3u8DataSource(_currentResourceId!, quality);
   }
 
   /// 首次创建 Player 时配置不变的 mpv 属性
@@ -735,16 +748,22 @@ class VideoPlayerController extends ChangeNotifier {
     if (_player == null) return;
     final nativePlayer = _player!.platform as NativePlayer;
 
+    // 开启音视频同步日志
+    await nativePlayer.setProperty('msg-level', 'cplayer=v,avsync=v');
+
     // seek 精度：双独立流(video+audio-files)必须用精确 seek，
     // 否则两个流的关键帧位置不同导致 AV 错位
     await nativePlayer.setProperty('hr-seek', 'yes');
 
-    // 音视频同步：禁用 display-resample 和 interpolation，避免自动对齐
-    await nativePlayer.setProperty('video-sync', 'disabled');
+    // 不覆盖 video-sync，使用 mpv 默认值（audio）
     await nativePlayer.setProperty('interpolation', 'no');
 
-    // fMP4 容错：genpts 重新生成 PTS，discardcorrupt 丢弃损坏帧
-    await nativePlayer.setProperty('demuxer-lavf-o', 'fflags=+genpts+discardcorrupt');
+    // fMP4 容错：discardcorrupt 丢弃损坏帧
+    // 注意：不用 genpts / linearize-timestamps（都会破坏 fMP4 的 PTS）
+    await nativePlayer.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
+
+    // 禁止 demuxer 回退读取，防止 fMP4 fragment 边界 PTS 回退
+    await nativePlayer.setProperty('demuxer-max-back-bytes', '0');
 
     // 网络超时配置
     await nativePlayer.setProperty('network-timeout', '10');
@@ -780,7 +799,7 @@ class VideoPlayerController extends ChangeNotifier {
       final preferredName = prefs.getString(_preferredQualityKey);
       return findBestQualityMatch(qualities, preferredName);
     } catch (_) {}
-    return HlsService.getDefaultQuality(qualities);
+    return getDefaultQuality(qualities);
   }
 
   Future<void> _savePreferredQuality(String quality) async {
@@ -833,7 +852,7 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   String getQualityDisplayName(String quality) {
-    return HlsService.getQualityLabel(quality);
+    return getQualityLabel(quality);
   }
 
   Future<void> toggleBackgroundPlay() async {
@@ -986,6 +1005,21 @@ class VideoPlayerController extends ChangeNotifier {
     }
   }
 
+  /// 调试：打印音视频 PTS 状态
+  Future<void> _logPtsState() async {
+    if (_player == null) return;
+    try {
+      final nativePlayer = _player!.platform as NativePlayer;
+      final videoPtsStr = await nativePlayer.getProperty('video-pts') as String? ?? '0';
+      final audioPtsStr = await nativePlayer.getProperty('audio-pts') as String? ?? '0';
+      final avsyncStr = await nativePlayer.getProperty('avsync') as String? ?? '0';
+      final videoPts = double.tryParse(videoPtsStr) ?? 0;
+      final audioPts = double.tryParse(audioPtsStr) ?? 0;
+      final avsync = double.tryParse(avsyncStr) ?? 0;
+      _logger.logDebug('[PTS] video=${videoPts.toStringAsFixed(3)}s, audio=${audioPts.toStringAsFixed(3)}s, avsync=${avsync.toStringAsFixed(3)}s');
+    } catch (_) {}
+  }
+
   /// 处理音频设备变化（耳机拔出等，参考 pili_plus becomingNoisy）
   void _handleBecomingNoisy() {
     if (_player == null || _isDisposed) return;
@@ -1026,7 +1060,7 @@ class VideoPlayerController extends ChangeNotifier {
     audioHandler.detachPlayer();
 
     // 清理视频缓存
-    _hlsService.cleanupAllTempCache();
+    _cacheService.cleanupAllTempCache();
 
     if (_player != null) {
       try {

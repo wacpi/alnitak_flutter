@@ -3,7 +3,7 @@ import '../../models/video_detail.dart';
 import '../../models/comment.dart';
 import '../../services/video_service.dart';
 import '../../services/history_service.dart';
-import '../../services/hls_service.dart';
+import '../../services/cache_service.dart';
 import '../../services/online_websocket_service.dart';
 import '../../controllers/video_player_controller.dart';
 import '../../controllers/danmaku_controller.dart';
@@ -224,7 +224,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
     _onlineWebSocketService.dispose();
 
     // 清理 HLS 缓存
-    HlsService().cleanupAllTempCache();
+    CacheService().cleanupAllTempCache();
 
     super.dispose();
   }
@@ -367,6 +367,9 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       _currentPart = part;
       _currentResourceId = currentResource.id;
       _currentInitialPosition = position;
+      _hasReportedCompleted = false;
+      _lastSavedSeconds = null;
+      _currentDuration = 0;
     });
 
     // 加载弹幕
@@ -447,6 +450,8 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   /// 切换分P
   Future<void> _changePart(int part) async {
     if (_videoDetail == null || part == _currentPart) return;
+      _progressReportVid = null;
+      _progressReportPart = null;
 
     if (part < 1 || part > _videoDetail!.resources.length) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -565,12 +570,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       // 3. 加载新视频数据
       await _loadVideoDataSeamless(targetPart: part);
 
-      // 4. 清理旧视频缓存
-      Future.delayed(const Duration(seconds: 2), () {
-        HlsService().cleanupExpiredCache();
-      });
-
-      // 5. 滚动到顶部
+      // 4. 滚动到顶部
       _scrollController.animateTo(
         0,
         duration: const Duration(milliseconds: 300),
@@ -684,6 +684,9 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       _currentPart = part;
       _currentResourceId = currentResource.id;
       _currentInitialPosition = position;
+      _hasReportedCompleted = false;
+      _lastSavedSeconds = null;
+      _currentDuration = 0;
     });
 
     // 加载弹幕
@@ -740,21 +743,27 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
 
   /// 播放结束回调
   void _onVideoEnded() {
-    if (_hasReportedCompleted) {
-      return;
-    }
+    if (_hasReportedCompleted || _currentDuration <= 0) return;
 
     // 使用锁定的 vid/part，防止切换过程中的竞态
     final reportVid = _progressReportVid ?? _currentVid;
     final reportPart = _progressReportPart ?? _currentPart;
 
-    _historyService.addHistory(
-      vid: reportVid,
-      part: reportPart,
-      time: -1,
-      duration: _currentDuration > 0 ? _currentDuration.toInt() : 0,
-    );
-    _hasReportedCompleted = true;
+    // 循环模式：不上报 -1，让播放器自动重新播放，进度会持续上报
+    // 非循环模式：上报 -1 表示播放完毕
+    final isLooping = _playerController?.loopMode.value.index == 1;
+    if (!isLooping) {
+      _historyService.addHistory(
+        vid: reportVid,
+        part: reportPart,
+        time: -1,
+        duration: _currentDuration > 0 ? _currentDuration.toInt() : 0,
+      );
+      _hasReportedCompleted = true;
+    } else {
+      // 循环模式：重置节流状态，确保第二轮从头开始上报进度
+      _lastSavedSeconds = null;
+    }
 
     // 自动连播逻辑
     final nextPart = _partListKey.currentState?.getNextPart();

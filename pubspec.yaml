@@ -38,6 +38,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.2.0
   path_provider: ^2.1.1
+  xml: ^6.5.0
   dio: ^5.4.0
   # 视频播放器 - media-kit（使用 pili_plus 的第三方 fork）
   media_kit: ^1.2.6

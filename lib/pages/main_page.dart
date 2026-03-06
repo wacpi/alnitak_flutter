@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'home_page.dart';
 import 'profile_page.dart';
-import '../services/hls_service.dart';
+import '../services/cache_service.dart';
 import '../services/logger_service.dart';
 import '../widgets/cached_image_widget.dart';
 
@@ -20,7 +20,7 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   final LoggerService _logger = LoggerService.instance;
   int _currentIndex = 0;
-  final HlsService _hlsService = HlsService();
+  final CacheService _cacheService = CacheService();
   bool _hasCleaned = false; // 是否已清理过缓存
   bool _clearCacheOnExit = false; // 退出即清设置
   DateTime? _lastBackPressTime;
@@ -106,7 +106,7 @@ class _MainPageState extends State<MainPage> {
 
       // 3. 清理所有播放器缓存（HLS缓存目录 + MPV缓存）
       // 【修复】使用 clearAllCache 替代 cleanupAllTempCache，确保完整清理
-      await _hlsService.clearAllCache();
+      await _cacheService.clearAllCache();
 
       // 4. 清理临时目录
       try {

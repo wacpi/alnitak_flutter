@@ -48,9 +48,11 @@ class MediaPlayerWidget extends StatefulWidget {
   State<MediaPlayerWidget> createState() => _MediaPlayerWidgetState();
 }
 
-class _MediaPlayerWidgetState extends State<MediaPlayerWidget> with WidgetsBindingObserver {
+class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
+    with WidgetsBindingObserver {
   VideoPlayerController? _controller;
   bool _controllerReady = false;
+  bool _isDisposed = false;
 
   @override
   void initState() {
@@ -64,7 +66,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget> with WidgetsBindi
     _initializePlayer();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _controller != null) {
+      if (!_isDisposed && mounted && _controller != null) {
         widget.onControllerReady?.call(_controller!);
       }
     });
@@ -74,23 +76,40 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget> with WidgetsBindi
 
   void _bindCallbacks() {
     if (_controller == null) return;
-    _controller!.onVideoEnd = widget.onVideoEnd;
-    _controller!.onProgressUpdate = widget.onProgressUpdate;
+
+    _controller!.onVideoEnd = () {
+      if (_isDisposed || !mounted) return;
+      widget.onVideoEnd?.call();
+    };
+
+    _controller!.onProgressUpdate = (pos, dur) {
+      if (_isDisposed || !mounted) return;
+      widget.onProgressUpdate?.call(pos, dur);
+    };
+
     _controller!.onQualityChanged = widget.onQualityChanged;
-    _controller!.onPlayingStateChanged = widget.onPlayingStateChanged;
+
+    _controller!.onPlayingStateChanged = (playing) {
+      if (_isDisposed || !mounted) return;
+      widget.onPlayingStateChanged?.call(playing);
+    };
   }
 
   void _setMetadata() {
     if (_controller == null || widget.title == null) return;
+
     _controller!.setVideoMetadata(
       title: widget.title!,
       author: widget.author,
-      coverUri: widget.coverUrl != null ? Uri.tryParse(widget.coverUrl!) : null,
+      coverUri:
+          widget.coverUrl != null ? Uri.tryParse(widget.coverUrl!) : null,
     );
   }
 
   void _initializePlayer() {
+    if (_isDisposed) return;
     if (_controller == null || widget.resourceId == null) return;
+
     _controller!.initialize(
       resourceId: widget.resourceId!,
       initialPosition: widget.initialPosition,
@@ -104,45 +123,50 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget> with WidgetsBindi
 
     if (_controller == null) return;
 
-    // 回调变化时重新绑定
-    if (oldWidget.onVideoEnd != widget.onVideoEnd ||
-        oldWidget.onProgressUpdate != widget.onProgressUpdate ||
-        oldWidget.onQualityChanged != widget.onQualityChanged ||
-        oldWidget.onPlayingStateChanged != widget.onPlayingStateChanged) {
-      _bindCallbacks();
-    }
-
-    // resourceId 变化时重新初始化
     if (oldWidget.resourceId != widget.resourceId) {
       _setMetadata();
       _initializePlayer();
+    }
+
+    if (oldWidget.onVideoEnd != widget.onVideoEnd ||
+        oldWidget.onProgressUpdate != widget.onProgressUpdate ||
+        oldWidget.onPlayingStateChanged != widget.onPlayingStateChanged) {
+      _bindCallbacks();
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    _controller?.handleAppLifecycleState(state == AppLifecycleState.paused);
+    if (_isDisposed) return;
+    _controller?.handleAppLifecycleState(
+        state == AppLifecycleState.paused);
   }
 
   @override
   void dispose() {
+    _isDisposed = true;
+
     WidgetsBinding.instance.removeObserver(this);
 
     _controller?.dispose();
+    _controller = null;
 
-    // 退出时恢复系统UI方向
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    SystemChrome.setPreferredOrientations(
+        [DeviceOrientation.portraitUp]);
     SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,
       overlays: SystemUiOverlay.values,
     );
+
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_controller == null || !_controllerReady) {
+    if (_isDisposed ||
+        _controller == null ||
+        !_controllerReady) {
       return _buildLoadingWidget();
     }
 

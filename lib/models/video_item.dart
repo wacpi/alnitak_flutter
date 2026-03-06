@@ -1,5 +1,5 @@
 import 'video_api_model.dart';
-import '../services/video_api_service.dart';
+import '../config/api_config.dart';
 
 class VideoItem {
   final String id;
@@ -34,7 +34,7 @@ class VideoItem {
       }
       // API返回的是相对路径，需要拼接baseUrl
       // 例如: "/api/image/1887881468064043008.png"
-      return '${VideoApiService.baseUrl}$path';
+      return '${ApiConfig.baseUrl}$path';
     }
 
     return VideoItem(

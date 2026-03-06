@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'reset_password_page.dart';
 import '../services/auth_service.dart';
-import '../services/hls_service.dart';
+import '../services/cache_service.dart';
 import '../services/theme_service.dart';
 import '../services/logger_service.dart';
 import '../controllers/video_player_controller.dart';
@@ -27,7 +27,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final LoggerService _logger = LoggerService.instance;
   final AuthService _authService = AuthService();
-  final HlsService _hlsService = HlsService();
+  final CacheService _cacheService = CacheService();
   final ThemeService _themeService = ThemeService();
 
   bool _backgroundPlayEnabled = false;
@@ -247,7 +247,7 @@ class _SettingsPageState extends State<SettingsPage> {
       await SmartCacheManager().emptyCache();
 
       // 3. 清理 HLS 和 MPV 缓存
-      await _hlsService.clearAllCache();
+      await _cacheService.clearAllCache();
 
       // 4. 清理临时目录中的其他缓存文件
       final tempDir = await getTemporaryDirectory();
