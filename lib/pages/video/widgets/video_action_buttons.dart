@@ -13,6 +13,10 @@ import '../../../theme/theme_extensions.dart';
 /// 视频操作按钮（点赞、收藏、分享）
 class VideoActionButtons extends StatefulWidget {
   final int vid;
+  // 当前分P（用于分享URL中的 p 参数，可选）
+  final int? currentPart;
+  // 短 ID（用于分享URL中的 v 参数，可选，优先于 vid）
+  final String? shortId;
   final VideoStat initialStat;
   final bool initialHasLiked;
   final bool initialHasCollected;
@@ -20,6 +24,8 @@ class VideoActionButtons extends StatefulWidget {
   const VideoActionButtons({
     super.key,
     required this.vid,
+    this.currentPart,
+    this.shortId,
     required this.initialStat,
     required this.initialHasLiked,
     required this.initialHasCollected,
@@ -240,7 +246,13 @@ class _VideoActionButtonsState extends State<VideoActionButtons>
 
   /// 获取分享URL
   String _getShareUrl() {
-    return ApiConfig.getShareUrl('video/${widget.vid}');
+    // 统一播放页链接为 /watch?v=<shortId 或 vid>&p=<part>
+    final id = widget.shortId?.isNotEmpty == true ? widget.shortId! : widget.vid.toString();
+    final buffer = StringBuffer('watch?v=$id');
+    if (widget.currentPart != null && widget.currentPart! > 1) {
+      buffer.write('&p=${widget.currentPart}');
+    }
+    return ApiConfig.getShareUrl(buffer.toString());
   }
 
  /// 显示二维码对话框

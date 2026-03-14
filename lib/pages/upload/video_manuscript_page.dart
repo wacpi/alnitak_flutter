@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
 import '../../models/upload_video.dart';
 import '../../services/video_submit_api_service.dart';
 import '../../widgets/cached_image_widget.dart';
@@ -21,6 +22,8 @@ enum VideoFilter { all, published, transcoding, transcodeFailed, pendingReview, 
 
 class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
   final ScrollController _scrollController = ScrollController();
+  final Set<int> _expandedProgressVideos = <int>{};
+  Timer? _silentRefreshTimer;
 
   List<ManuscriptVideo> _videos = [];
   int _currentPage = 1;
@@ -57,6 +60,7 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
 
   @override
   void dispose() {
+    _stopSilentRefresh();
     _scrollController.dispose();
     super.dispose();
   }
@@ -107,6 +111,86 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
         });
       }
     }
+  }
+
+  Future<void> _silentRefreshTranscodingVideos() async {
+    if (!mounted || _isLoading || _currentFilter != VideoFilter.transcoding) {
+      return;
+    }
+
+    final category = _categoryFromFilter(_currentFilter);
+    final targetPage = _currentPage < 1 ? 1 : _currentPage;
+
+    try {
+      final refreshed = <ManuscriptVideo>[];
+      var hasMore = false;
+
+      for (int page = 1; page <= targetPage; page++) {
+        final pageData = await VideoSubmitApiService.getManuscriptVideos(
+          page: page,
+          pageSize: _pageSize,
+          category: category,
+        );
+        refreshed.addAll(pageData);
+        hasMore = pageData.length >= _pageSize;
+        if (pageData.isEmpty) {
+          break;
+        }
+      }
+
+      if (!mounted) return;
+      if (!_shouldApplySilentRefresh(refreshed)) {
+        return;
+      }
+      setState(() {
+        _videos = refreshed;
+        _hasMore = hasMore;
+        if (refreshed.length < (_currentPage - 1) * _pageSize) {
+          _currentPage = (refreshed.length / _pageSize).ceil().clamp(1, targetPage);
+        }
+      });
+    } catch (_) {
+      // 静默刷新失败不影响当前 UI
+    }
+  }
+
+  bool _shouldApplySilentRefresh(List<ManuscriptVideo> refreshed) {
+    if (refreshed.length != _videos.length) {
+      return true;
+    }
+
+    for (int i = 0; i < refreshed.length; i++) {
+      final oldVideo = _videos[i];
+      final newVideo = refreshed[i];
+
+      if (oldVideo.vid != newVideo.vid) {
+        return true;
+      }
+
+      // 仅在进度值有实际变化时触发重绘（避免无效 setState）
+      if ((oldVideo.transcodingProgress - newVideo.transcodingProgress).abs() > 0.01) {
+        return true;
+      }
+
+      final oldDetails = oldVideo.transcodingDetails;
+      final newDetails = newVideo.transcodingDetails;
+      if (oldDetails.length != newDetails.length) {
+        return true;
+      }
+
+      for (int j = 0; j < oldDetails.length; j++) {
+        final oldItem = oldDetails[j];
+        final newItem = newDetails[j];
+        if (oldItem.resourceId != newItem.resourceId ||
+            oldItem.quality != newItem.quality ||
+            oldItem.status != newItem.status ||
+            (oldItem.progress - newItem.progress).abs() > 0.01) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   Future<void> _loadMoreVideos() async {
@@ -214,7 +298,24 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
     setState(() {
       _currentFilter = filter;
     });
+    if (filter == VideoFilter.transcoding) {
+      _startSilentRefresh();
+    } else {
+      _stopSilentRefresh();
+    }
     _loadVideos(forceReload: true);
+  }
+
+  void _startSilentRefresh() {
+    _silentRefreshTimer?.cancel();
+    _silentRefreshTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+      _silentRefreshTranscodingVideos();
+    });
+  }
+
+  void _stopSilentRefresh() {
+    _silentRefreshTimer?.cancel();
+    _silentRefreshTimer = null;
   }
 
   @override
@@ -455,6 +556,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                         color: VideoStatusUtils.getStatusColor(video.status),
                       ),
                     ),
+                    if (video.status == 100 || video.status == 200 || video.status == 300)
+                      _buildTranscodingProgressSection(video),
                     const SizedBox(height: 4),
                     Row(
                       children: [
@@ -513,6 +616,122 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildTranscodingProgressSection(ManuscriptVideo video) {
+    final colors = context.colors;
+    final isExpanded = _expandedProgressVideos.contains(video.vid);
+    final details = video.transcodingDetails;
+    final progressText = '${video.transcodingProgress.toStringAsFixed(1)}%';
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.sync, size: 14, color: colors.warning),
+              const SizedBox(width: 4),
+              Text(
+                '转码进度 $progressText',
+                style: TextStyle(fontSize: 12, color: colors.warning),
+              ),
+              const Spacer(),
+              if (details.isNotEmpty)
+                InkWell(
+                  onTap: () {
+                    setState(() {
+                      if (isExpanded) {
+                        _expandedProgressVideos.remove(video.vid);
+                      } else {
+                        _expandedProgressVideos.add(video.vid);
+                      }
+                    });
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Row(
+                      children: [
+                        Text(
+                          isExpanded ? '收起' : '展开',
+                          style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                        ),
+                        Icon(
+                          isExpanded ? Icons.expand_less : Icons.expand_more,
+                          size: 14,
+                          color: colors.textSecondary,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          LinearProgressIndicator(
+            value: (video.transcodingProgress.clamp(0, 100)) / 100,
+            minHeight: 4,
+            borderRadius: BorderRadius.circular(2),
+            backgroundColor: colors.progressBackground,
+            valueColor: AlwaysStoppedAnimation<Color>(colors.warning),
+          ),
+          if (isExpanded && details.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            ...details.map((item) {
+              final title = item.resourceTitle.isNotEmpty ? item.resourceTitle : '分P${item.resourceId}';
+              final statusText = item.status == 'fail'
+                  ? '失败'
+                  : item.status == 'success'
+                      ? '完成'
+                      : item.status == 'waiting'
+                          ? '排队中'
+                          : '处理中';
+              final statusColor = item.status == 'fail'
+                  ? colors.error
+                  : item.status == 'success'
+                      ? colors.success
+                      : item.status == 'waiting'
+                          ? colors.textSecondary
+                          : colors.warning;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$title / ${item.quality}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: LinearProgressIndicator(
+                            value: (item.progress.clamp(0, 100)) / 100,
+                            minHeight: 3,
+                            borderRadius: BorderRadius.circular(2),
+                            backgroundColor: colors.progressBackground,
+                            valueColor: AlwaysStoppedAnimation<Color>(statusColor),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${item.progress.toStringAsFixed(0)}% $statusText',
+                          style: TextStyle(fontSize: 10, color: statusColor),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ]
+        ],
       ),
     );
   }

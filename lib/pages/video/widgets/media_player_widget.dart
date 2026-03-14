@@ -23,6 +23,10 @@ class MediaPlayerWidget extends StatefulWidget {
   final DanmakuController? danmakuController;
   final Function(bool playing)? onPlayingStateChanged;
   final ValueNotifier<int>? onlineCount;
+  /// 是否处于全屏（与 onFullscreenToggle 配套）
+  final bool isFullscreen;
+  /// 请求切换全屏（若提供则用自管全屏，不依赖 media_kit 的 InheritedWidget）
+  final VoidCallback? onFullscreenToggle;
 
   const MediaPlayerWidget({
     super.key,
@@ -42,6 +46,8 @@ class MediaPlayerWidget extends StatefulWidget {
     this.danmakuController,
     this.onPlayingStateChanged,
     this.onlineCount,
+    this.isFullscreen = false,
+    this.onFullscreenToggle,
   });
 
   @override
@@ -229,17 +235,28 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
               return ValueListenableBuilder<bool>(
                 valueListenable: _controller!.backgroundPlayEnabled,
                 builder: (context, bgEnabled, _) {
-                  return Video(
-                    controller: _controller!.videoController,
-                    pauseUponEnteringBackgroundMode: !bgEnabled,
-                    controls: (state) => CustomPlayerUI(
-                      controller: state.widget.controller,
-                      logic: _controller!,
-                      title: widget.title ?? '',
-                      onBack: () => Navigator.of(context).maybePop(),
-                      danmakuController: widget.danmakuController,
-                      onlineCount: widget.onlineCount,
-                    ),
+                  // fork 版 Video 注释掉了 controls 渲染，
+                  // 用外层 Stack 叠加自定义 UI，不依赖 Video 内部机制
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Video(
+                        controller: _controller!.videoController,
+                        pauseUponEnteringBackgroundMode: !bgEnabled,
+                      ),
+                      Positioned.fill(
+                        child: CustomPlayerUI(
+                          controller: _controller!.videoController,
+                          logic: _controller!,
+                          title: widget.title ?? '',
+                          onBack: () => Navigator.of(context).maybePop(),
+                          danmakuController: widget.danmakuController,
+                          onlineCount: widget.onlineCount,
+                          forceFullscreen: widget.onFullscreenToggle != null ? widget.isFullscreen : null,
+                          onFullscreenToggle: widget.onFullscreenToggle,
+                        ),
+                      ),
+                    ],
                   );
                 },
               );

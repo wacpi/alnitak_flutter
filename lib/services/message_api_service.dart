@@ -240,7 +240,7 @@ class MessageApiService {
       if (response.data['code'] != 200 && kDebugMode) {
         debugPrint('[MessageApi] saveReadStatus $category=$readUpToId code=${response.data['code']} msg=${response.data['msg']} data=${response.data}');
       }
-    } catch (e, st) {
+    } catch (e) {
       if (kDebugMode) {
         debugPrint('[MessageApi] saveReadStatus failed: $e');
         if (e is DioException && e.response != null) {

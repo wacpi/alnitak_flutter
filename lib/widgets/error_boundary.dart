@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../services/logger_service.dart';
+import '../pages/main_page.dart';
 
 typedef ErrorWidgetBuilder = Widget Function(BuildContext context, Object error, StackTrace stackTrace);
 
@@ -68,16 +69,6 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
     widget.onError?.call(error, stackTrace);
   }
 
-  void _resetError() {
-    if (mounted) {
-      setState(() {
-        _hasError = false;
-        _error = Object();
-        _stackTrace = StackTrace.empty;
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_hasError) {
@@ -115,9 +106,14 @@ child: Padding(
 ),
               SizedBox(height: 24.h),
               ElevatedButton.icon(
-                onPressed: _resetError,
-                icon: const Icon(Icons.refresh),
-                label: const Text('重试'),
+                onPressed: () {
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(builder: (_) => const MainPage()),
+                    (route) => false,
+                  );
+                },
+                icon: const Icon(Icons.home),
+                label: const Text('返回首页'),
               ),
               if (kDebugMode) ...[
 SizedBox(height: 16.h),

@@ -3,6 +3,8 @@ import '../utils/image_utils.dart';
 /// 视频详情数据模型
 class VideoDetail {
   final int vid;
+  // 短 ID（后端返回 shortId，可选）
+  final String? shortId;
   final String title;
   final String cover;
   final String desc;
@@ -17,6 +19,7 @@ class VideoDetail {
 
   VideoDetail({
     required this.vid,
+    this.shortId,
     required this.title,
     required this.cover,
     required this.desc,
@@ -33,6 +36,7 @@ class VideoDetail {
   factory VideoDetail.fromJson(Map<String, dynamic> json) {
     return VideoDetail(
       vid: json['vid'] ?? 0,
+      shortId: json['shortId'] as String?,
       title: json['title'] ?? '',
       cover: ImageUtils.getFullImageUrl(json['cover']),
       desc: json['desc'] ?? '',
@@ -57,6 +61,7 @@ class VideoDetail {
   Map<String, dynamic> toJson() {
     return {
       'vid': vid,
+      'shortId': shortId,
       'title': title,
       'cover': cover,
       'desc': desc,

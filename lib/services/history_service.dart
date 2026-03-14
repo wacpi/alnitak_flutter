@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/http_client.dart';
 import '../utils/token_manager.dart';
 import '../models/history_models.dart';
+import 'logger_service.dart';
 
 /// 历史记录服务
 ///
@@ -33,7 +34,9 @@ class HistoryService {
       if (jsonStr != null) {
         return PlayProgressData.fromJson({'vid': vid, 'part': part ?? 1, 'progress': double.parse(jsonStr)});
       }
-    } catch (_) {}
+    } catch (e) {
+      LoggerService.instance.logWarning('本地进度读取失败: $e', tag: 'HistoryService');
+    }
     return null;
   }
 
@@ -43,7 +46,9 @@ class HistoryService {
       final prefs = await SharedPreferences.getInstance();
       final key = 'progress_${vid}_$part';
       await prefs.setString(key, progress.toStringAsFixed(1));
-    } catch (_) {}
+    } catch (e) {
+      LoggerService.instance.logWarning('本地进度保存失败: $e', tag: 'HistoryService');
+    }
   }
 
   /// 带重试的获取进度请求

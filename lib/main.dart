@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:media_kit/media_kit.dart';
@@ -18,11 +20,23 @@ import 'widgets/error_boundary.dart';
 /// 全局 AudioService handler，供 VideoPlayerController 使用
 late VideoAudioHandler audioHandler;
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // 初始化 media_kit
+  runZonedGuarded(() async {
+    await _init();
+    runApp(const MyApp());
+  }, (Object error, StackTrace stack) {
+    LoggerService.instance.logError(
+      message: '未捕获的异步异常',
+      error: error,
+      stackTrace: stack,
+      context: {'source': 'runZonedGuarded'},
+    );
+  });
+}
+
+Future<void> _init() async {
   MediaKit.ensureInitialized();
-  // 初始化 AudioService（后台播放 + 通知栏控件）
   audioHandler = await AudioService.init(
     builder: () => VideoAudioHandler(),
     config: const AudioServiceConfig(
@@ -32,20 +46,15 @@ void main() async {
       androidStopForegroundOnPause: true,
     ),
   );
-  // 初始化主题服务
   await ThemeService().init();
-  // 初始化 API 配置（必须在 HttpClient 之前）
   await ApiConfig.init();
-  // 初始化 Token 管理器（安全存储）
   await TokenManager().initialize();
-  // 初始化 HTTP 客户端
   await HttpClient().init();
-  // 初始化登录状态管理器
   await AuthStateManager().initialize();
-  // 确保屏幕尺寸可用
   await ScreenUtil.ensureScreenSize();
-  LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');
-  runApp(const MyApp());
+  if (kDebugMode) {
+    LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');
+  }
 }
 
 class MyApp extends StatefulWidget {

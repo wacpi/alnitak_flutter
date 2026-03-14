@@ -145,8 +145,10 @@ class VideoStatus {
       copyright: json['copyright'] as bool? ?? false,
       partitionId: json['partitionId'] as int? ?? 0,
       resources: (json['resources'] as List<dynamic>?)
-          ?.map((item) => VideoResource.fromJson(item as Map<String, dynamic>))
-          .toList() ?? [],
+              ?.map((item) =>
+                  VideoResource.fromJson(item as Map<String, dynamic>))
+              .toList() ??
+          [],
       createdAt: json['createdAt'] as String? ?? '',
     );
   }
@@ -160,6 +162,8 @@ class ManuscriptVideo {
   final int status;
   final int clicks;
   final String createdAt;
+  final double transcodingProgress;
+  final List<TranscodingProgressItem> transcodingDetails;
 
   ManuscriptVideo({
     required this.vid,
@@ -168,6 +172,8 @@ class ManuscriptVideo {
     required this.status,
     required this.clicks,
     required this.createdAt,
+    this.transcodingProgress = 0,
+    this.transcodingDetails = const [],
   });
 
   factory ManuscriptVideo.fromJson(Map<String, dynamic> json) {
@@ -178,6 +184,13 @@ class ManuscriptVideo {
       status: json['status'] as int,
       clicks: json['clicks'] as int,
       createdAt: json['createdAt'] as String,
+      transcodingProgress:
+          (json['transcodingProgress'] as num?)?.toDouble() ?? 0,
+      transcodingDetails: (json['transcodingDetails'] as List<dynamic>?)
+              ?.map((item) => TranscodingProgressItem.fromJson(
+                  item as Map<String, dynamic>))
+              .toList() ??
+          const [],
     );
   }
 
@@ -206,5 +219,31 @@ class ManuscriptVideo {
       default:
         return '已发布'; // 正常状态
     }
+  }
+}
+
+class TranscodingProgressItem {
+  final int resourceId;
+  final String resourceTitle;
+  final String quality;
+  final double progress;
+  final String status;
+
+  const TranscodingProgressItem({
+    required this.resourceId,
+    required this.resourceTitle,
+    required this.quality,
+    required this.progress,
+    required this.status,
+  });
+
+  factory TranscodingProgressItem.fromJson(Map<String, dynamic> json) {
+    return TranscodingProgressItem(
+      resourceId: json['resourceId'] as int? ?? 0,
+      resourceTitle: json['resourceTitle'] as String? ?? '',
+      quality: json['quality'] as String? ?? '',
+      progress: (json['progress'] as num?)?.toDouble() ?? 0,
+      status: json['status'] as String? ?? 'processing',
+    );
   }
 }

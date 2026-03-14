@@ -1,5 +1,7 @@
 class VideoApiModel {
   final int vid;
+  // 短 ID（后端返回 shortId，可选）
+  final String? shortId;
   final int uid;
   final String title;
   final String cover;
@@ -16,6 +18,7 @@ class VideoApiModel {
 
   VideoApiModel({
     required this.vid,
+    this.shortId,
     required this.uid,
     required this.title,
     required this.cover,
@@ -34,6 +37,7 @@ class VideoApiModel {
   factory VideoApiModel.fromJson(Map<String, dynamic> json) {
     return VideoApiModel(
       vid: json['vid'] ?? 0,
+      shortId: json['shortId'] as String?,
       uid: json['uid'] ?? 0,
       title: json['title'] ?? '',
       cover: json['cover'] ?? '',
@@ -104,6 +108,8 @@ class AuthorModel {
 
 class ResourceModel {
   final int id;
+  // 资源短 ID（后端返回 shortId，可选）
+  final String? shortId;
   final String createdAt;
   final int vid;
   final String title;
@@ -112,6 +118,7 @@ class ResourceModel {
 
   ResourceModel({
     required this.id,
+    this.shortId,
     required this.createdAt,
     required this.vid,
     required this.title,
@@ -122,6 +129,7 @@ class ResourceModel {
   factory ResourceModel.fromJson(Map<String, dynamic> json) {
     return ResourceModel(
       id: json['id'] ?? 0,
+      shortId: json['shortId'] as String?,
       createdAt: json['createdAt'] ?? '',
       vid: json['vid'] ?? 0,
       title: json['title'] ?? '',

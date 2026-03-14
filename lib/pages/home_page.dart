@@ -1110,21 +1110,47 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _onCarouselTap(CarouselItem item) {
     // 如果有url，解析并跳转
     if (item.url != null && item.url!.isNotEmpty) {
-      // 尝试解析视频ID（格式如：/video/123）
-      final videoMatch = RegExp(r'/video/(\d+)').firstMatch(item.url!);
-      if (videoMatch != null) {
-        final vid = int.tryParse(videoMatch.group(1)!);
-        if (vid != null) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => VideoPlayPage(vid: vid),
-            ),
-          );
-          return;
+      final rawUrl = item.url!;
+
+      Uri? uri;
+      try {
+        uri = Uri.parse(rawUrl);
+      } catch (_) {
+        uri = null;
+      }
+
+      if (uri != null) {
+        // 优先解析统一的播放页链接：/watch?v=<vid>&p=<part>
+        final v = uri.queryParameters['v'];
+        if (v != null && v.isNotEmpty) {
+          final vid = int.tryParse(v);
+          if (vid != null) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => VideoPlayPage(vid: vid),
+              ),
+            );
+            return;
+          }
+        }
+
+        // 兼容旧链接格式：/video/123
+        final videoMatch = RegExp(r'/video/(\d+)').firstMatch(uri.path);
+        if (videoMatch != null) {
+          final vid = int.tryParse(videoMatch.group(1)!);
+          if (vid != null) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => VideoPlayPage(vid: vid),
+              ),
+            );
+            return;
+          }
         }
       }
-      // 其他链接暂不处理，后续可以添加WebView或外部浏览器打开
+      // 其他链接暂不处理，后续可以添加 WebView 或外部浏览器打开
     }
   }
 }

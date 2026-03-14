@@ -5,6 +5,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../controllers/video_player_controller.dart';
 import '../../../controllers/danmaku_controller.dart';
 import '../../../widgets/danmaku_overlay.dart';
+import 'player_quality_panel.dart';
+import 'player_speed_panel.dart';
+import 'player_progress_slider.dart';
+import 'player_top_bar.dart';
+import 'player_bottom_bar.dart';
 
 /// 自定义播放器 UI (V8 完整版)
 ///
@@ -22,6 +27,10 @@ class CustomPlayerUI extends StatefulWidget {
   final DanmakuController? danmakuController;
   /// 在看人数（可选）
   final ValueNotifier<int>? onlineCount;
+  /// 强制全屏状态（与 onFullscreenToggle 配套，用于自管全屏时不依赖 media_kit 的 InheritedWidget）
+  final bool? forceFullscreen;
+  /// 全屏切换回调（若提供则用此替代 media_kit 的 toggleFullscreen）
+  final VoidCallback? onFullscreenToggle;
 
   const CustomPlayerUI({
     super.key,
@@ -31,6 +40,8 @@ class CustomPlayerUI extends StatefulWidget {
     this.onBack,
     this.danmakuController,
     this.onlineCount,
+    this.forceFullscreen,
+    this.onFullscreenToggle,
   });
 
   @override
@@ -96,6 +107,9 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
   static const List<double> _speedOptions = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
   final GlobalKey _speedButtonKey = GlobalKey();
   double? _speedPanelRight;
+
+  /// 当前是否全屏：优先使用外部传入的 forceFullscreen，否则走 media_kit 的 isFullscreen(context)
+  bool get _fullscreen => widget.forceFullscreen ?? isFullscreen(context);
 
   // ============ 播放状态订阅 ============
   StreamSubscription<bool>? _playingSubscription;
@@ -205,7 +219,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
     final buttonBox = _qualityButtonKey.currentContext?.findRenderObject() as RenderBox?;
     if (buttonBox == null) return;
 
-    final isFull = isFullscreen(context);
+    final isFull = _fullscreen;
     final buttonGlobalPos = buttonBox.localToGlobal(Offset.zero);
     final buttonSize = buttonBox.size;
     final overlaySize = (context.findRenderObject() as RenderBox).size;
@@ -527,7 +541,36 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
                                 duration: const Duration(milliseconds: 300),
                                 child: Stack(
                                   children: [
-                                    if (!_isLocked) _buildTopBar(),
+                                    if (!_isLocked)
+                                PlayerTopBar(
+                                  title: widget.title,
+                                  onBack: widget.onBack,
+                                  fullscreen: _fullscreen,
+                                  wasFullscreen: _wasFullscreen,
+                                  onFullscreenEnter: () {
+                                    setState(() {
+                                      _wasFullscreen = true;
+                                      _hasPlayedTitleAnimation = false;
+                                      _titleScrollController.reset();
+                                    });
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (mounted && widget.title.isNotEmpty) {
+                                        _checkAndStartTitleAnimation();
+                                      }
+                                    });
+                                  },
+                                  onFullscreenExit: () {
+                                    setState(() {
+                                      _wasFullscreen = false;
+                                      _hasPlayedTitleAnimation = false;
+                                      _titleScrollController.reset();
+                                    });
+                                  },
+                                  titleScrollController: _titleScrollController,
+                                  titleScrollAnimation: _titleScrollAnimation,
+                                  checkAndStartTitleAnimation: _checkAndStartTitleAnimation,
+                                  onlineCount: widget.onlineCount,
+                                ),
                                     if (!_isLocked) _buildBottomBar(),
                                   ],
                                 ),
@@ -545,7 +588,36 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
                           duration: const Duration(milliseconds: 300),
                           child: Stack(
                             children: [
-                              if (!_isLocked) _buildTopBar(),
+                              if (!_isLocked)
+                                PlayerTopBar(
+                                  title: widget.title,
+                                  onBack: widget.onBack,
+                                  fullscreen: _fullscreen,
+                                  wasFullscreen: _wasFullscreen,
+                                  onFullscreenEnter: () {
+                                    setState(() {
+                                      _wasFullscreen = true;
+                                      _hasPlayedTitleAnimation = false;
+                                      _titleScrollController.reset();
+                                    });
+                                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                                      if (mounted && widget.title.isNotEmpty) {
+                                        _checkAndStartTitleAnimation();
+                                      }
+                                    });
+                                  },
+                                  onFullscreenExit: () {
+                                    setState(() {
+                                      _wasFullscreen = false;
+                                      _hasPlayedTitleAnimation = false;
+                                      _titleScrollController.reset();
+                                    });
+                                  },
+                                  titleScrollController: _titleScrollController,
+                                  titleScrollAnimation: _titleScrollAnimation,
+                                  checkAndStartTitleAnimation: _checkAndStartTitleAnimation,
+                                  onlineCount: widget.onlineCount,
+                                ),
                               if (!_isLocked) _buildLockButton(),
                               if (!_isLocked) _buildCenterPlayButton(),
                               if (!_isLocked) _buildBottomBar(),
@@ -592,11 +664,37 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
 
                   // 6. 清晰度面板
                   if (_showQualityPanel && _showControls && _panelRight != null)
-                    _buildQualityPanel(),
+                    PlayerQualityPanel(
+                      qualities: widget.logic.availableQualities.value,
+                      currentQuality: widget.logic.currentQuality.value,
+                      getQualityDisplayName: widget.logic.getQualityDisplayName,
+                      onSelect: (quality) {
+                        if (quality != widget.logic.currentQuality.value) {
+                          widget.logic.changeQuality(quality);
+                        }
+                        setState(() => _showQualityPanel = false);
+                        _startHideTimer();
+                      },
+                      right: _panelRight!,
+                      bottom: _panelBottom ?? 50,
+                    ),
 
                   // 6.5 倍速选择面板
                   if (_showSpeedPanel && _showControls)
-                    _buildSpeedPanel(),
+                    PlayerSpeedPanel(
+                      speeds: _speedOptions,
+                      currentSpeed: _currentSpeed,
+                      onSelect: (speed) {
+                        setState(() {
+                          _currentSpeed = speed;
+                          _showSpeedPanel = false;
+                        });
+                        widget.controller.player.setRate(speed);
+                        _startHideTimer();
+                      },
+                      right: _speedPanelRight ?? 100,
+                      bottom: 50,
+                    ),
 
                   // 7. 弹幕设置面板
                   if (_showDanmakuSettings && widget.danmakuController != null)
@@ -644,112 +742,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
 
   // ============ UI 组件构建 ============
 
-  Widget _buildTopBar() {
-    // 在顶层获取全屏状态，供所有子组件使用
-    final fullscreen = isFullscreen(context);
-
-    return Positioned(
-      top: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Colors.black.withValues(alpha: 0.7), Colors.transparent],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-        child: SafeArea(
-          bottom: false,
-          child: Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 20),
-                onPressed: widget.onBack ?? () => Navigator.of(context).maybePop(),
-              ),
-              // 【修改】仅在全屏模式下显示标题，限制宽度不超过屏幕中间
-              Expanded(
-                child: Builder(
-                  builder: (context) {
-                    // 检测全屏状态变化
-                    if (fullscreen && !_wasFullscreen) {
-                      // 刚进入全屏，重置动画状态并延迟启动
-                      _wasFullscreen = true;
-                      _hasPlayedTitleAnimation = false;
-                      _titleScrollController.reset();
-                      // 延迟启动动画
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted && widget.title.isNotEmpty) {
-                          _checkAndStartTitleAnimation();
-                        }
-                      });
-                    } else if (!fullscreen && _wasFullscreen) {
-                      // 退出全屏，重置状态
-                      _wasFullscreen = false;
-                      _hasPlayedTitleAnimation = false;
-                      _titleScrollController.reset();
-                    }
-
-                    // 只在全屏时显示标题
-                    if (!fullscreen || widget.title.isEmpty) {
-                      return const SizedBox.shrink();
-                    }
-
-                    // 限制标题最大宽度为可用宽度的 50%（不超过中间位置）
-                    return LayoutBuilder(
-                      builder: (context, constraints) {
-                        final maxTitleWidth = constraints.maxWidth * 0.5;
-                        return _buildScrollableTitle(maxTitleWidth);
-                      },
-                    );
-                  },
-                ),
-              ),
-              // 在看人数（右侧，仅全屏时显示）
-              if (widget.onlineCount != null && fullscreen)
-                ValueListenableBuilder<int>(
-                  valueListenable: widget.onlineCount!,
-                  builder: (context, count, _) {
-                    // count=0 时也显示，便于确认 WebSocket 是否工作
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.remove_red_eye_outlined,
-                            color: Colors.white70,
-                            size: 14,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            count > 0 ? '$count人在看' : '连接中...',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              const SizedBox(width: 8),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 检查标题是否需要滚动动画，并启动
+  /// 检查标题是否需要滚动动画，并启动（供 PlayerTopBar 回调）
   void _checkAndStartTitleAnimation() {
     if (_hasPlayedTitleAnimation || !mounted) return;
 
@@ -780,66 +773,6 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
         }
       });
     }
-  }
-
-  /// 构建可滚动的标题组件
-  Widget _buildScrollableTitle(double maxWidth) {
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxWidth: maxWidth),
-      child: AnimatedBuilder(
-        animation: _titleScrollAnimation,
-        builder: (context, child) {
-          // 计算文本实际宽度
-          final textPainter = TextPainter(
-            text: TextSpan(
-              text: widget.title,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            maxLines: 1,
-            textDirection: TextDirection.ltr,
-          )..layout();
-
-          final isOverflow = textPainter.width > maxWidth;
-
-          // 如果不溢出或动画已完成，显示带省略号的静态文本
-          if (!isOverflow || _titleScrollController.isCompleted) {
-            return Text(
-              widget.title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            );
-          }
-
-          // 溢出且动画进行中，显示滚动文本
-          final scrollDistance = textPainter.width - maxWidth + 30;
-          final offset = _titleScrollAnimation.value * scrollDistance;
-
-          return ClipRect(
-            child: Transform.translate(
-              offset: Offset(-offset, 0),
-              child: Text(
-                widget.title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
-                ),
-                maxLines: 1,
-                softWrap: false,
-              ),
-            ),
-          );
-        },
-      ),
-    );
   }
 
   Widget _buildLockButton() {
@@ -933,117 +866,24 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
   }
 
   Widget _buildBottomBar() {
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        // 进度条和控制按钮的容器
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 13),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            // 从透明到黑色渐变
-            colors: [Colors.transparent, Colors.black.withValues(alpha: 0.3)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // 第一行：进度条
-              _buildProgressRow(),
-              //进度条间距
-              const SizedBox(height: 2),
-              // 第二行：控制按钮
-              _buildControlButtonsRow(),
-            ],
-          ),
-        ),
+    return PlayerBottomBar(
+      progressSlider: PlayerProgressSlider(
+        sliderPositionSeconds: widget.logic.sliderPositionSeconds,
+        durationSeconds: widget.logic.durationSeconds,
+        bufferedSeconds: widget.logic.bufferedSeconds,
+        onSliderDragStart: widget.logic.onSliderDragStart,
+        onSliderDragUpdate: widget.logic.onSliderDragUpdate,
+        onSliderDragEnd: widget.logic.onSliderDragEnd,
+        formatDuration: _formatDuration,
+        onInteraction: _startHideTimer,
       ),
-    );
-  }
-
-  /// 构建进度条行（时间 + 进度条 + 时间）
-  ///
-  /// pili_plus 风格：使用 ValueListenableBuilder + 秒级 ValueNotifier，
-  /// 最多 1Hz 更新，拖拽时冻结不接收 mpv 回报的位置。
-  Widget _buildProgressRow() {
-    return ValueListenableBuilder<int>(
-      valueListenable: widget.logic.sliderPositionSeconds,
-      builder: (context, posSeconds, _) {
-        return ValueListenableBuilder<int>(
-          valueListenable: widget.logic.durationSeconds,
-          builder: (context, durSeconds, _) {
-            return ValueListenableBuilder<int>(
-              valueListenable: widget.logic.bufferedSeconds,
-              builder: (context, bufSeconds, _) {
-                final maxVal = durSeconds > 0 ? durSeconds.toDouble() : 1.0;
-                final displayPos = Duration(seconds: posSeconds);
-                final displayDur = Duration(seconds: durSeconds);
-
-                return Row(
-                  children: [
-                    Text(
-                      _formatDuration(displayPos),
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          trackHeight: 4.0,
-                          thumbShape: const _CustomSliderThumbShape(
-                            enabledThumbRadius: 7,
-                            thumbColor: Colors.blue,
-                            borderColor: Colors.white,
-                            borderWidth: 2,
-                          ),
-                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 15),
-                          activeTrackColor: Colors.blue,
-                          inactiveTrackColor: Colors.white.withValues(alpha: 0.3),
-                          thumbColor: Colors.blue,
-                          secondaryActiveTrackColor: Colors.white.withValues(alpha: 0.5),
-                        ),
-                        child: Slider(
-                          value: posSeconds.toDouble().clamp(0.0, maxVal),
-                          min: 0,
-                          max: maxVal,
-                          secondaryTrackValue: bufSeconds.toDouble().clamp(0.0, maxVal),
-                          onChangeStart: (_) {
-                            widget.logic.onSliderDragStart();
-                          },
-                          onChanged: (v) {
-                            widget.logic.onSliderDragUpdate(Duration(seconds: v.toInt()));
-                            _startHideTimer();
-                          },
-                          onChangeEnd: (v) {
-                            widget.logic.onSliderDragEnd(Duration(seconds: v.toInt()));
-                            _startHideTimer();
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _formatDuration(displayDur),
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                  ],
-                );
-              },
-            );
-          },
-        );
-      },
+      controlRow: _buildControlButtonsRow(),
     );
   }
 
   /// 构建控制按钮行
   Widget _buildControlButtonsRow() {
-    final fullscreen = isFullscreen(context);
+    final fullscreen = _fullscreen;
 
     return Row(
       children: [
@@ -1213,7 +1053,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  child: _buildQualityLabel(qualityDisplayName, false),
+                  child: PlayerQualityPanel.buildQualityLabel(qualityDisplayName, false),
                 );
               },
             );
@@ -1273,98 +1113,16 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
           padding: EdgeInsets.zero,
           constraints: BoxConstraints(minWidth: fullscreen ? 36 : 32, minHeight: 32),
           onPressed: () async {
-            await toggleFullscreen(context);
+            if (widget.onFullscreenToggle != null) {
+              widget.onFullscreenToggle!();
+            } else {
+              await toggleFullscreen(context);
+            }
             await Future.delayed(const Duration(milliseconds: 100));
             if (mounted) _startHideTimer();
           },
         ),
       ],
-    );
-  }
-
-  Widget _buildQualityPanel() {
-    final qualities = widget.logic.availableQualities.value;
-    final currentQuality = widget.logic.currentQuality.value;
-
-    return Positioned(
-      right: _panelRight ?? 16,
-      bottom: _panelBottom ?? 50,
-      child: GestureDetector(
-        onTap: () {}, // 拦截点击穿透
-        child: Container(
-          width: 76,
-          constraints: const BoxConstraints(maxHeight: 200),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.4),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: qualities.map((quality) {
-                final isSelected = quality == currentQuality;
-                final displayName = widget.logic.getQualityDisplayName(quality);
-
-                return InkWell(
-                  onTap: () {
-                    if (!isSelected) widget.logic.changeQuality(quality);
-                    setState(() => _showQualityPanel = false);
-                    _startHideTimer();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                    alignment: Alignment.center,
-                    child: _buildQualityLabel(displayName, isSelected),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 构建清晰度标签，高帧率后缀（如"60"）使用特殊样式
-  Widget _buildQualityLabel(String displayName, bool isSelected) {
-    // 匹配末尾的帧率数字，如 "1080P60" → base="1080P", fps="60"
-    final match = RegExp(r'^(.+?P|[24]K)(\d+)$').firstMatch(displayName);
-    if (match == null) {
-      return Text(
-        displayName,
-        style: TextStyle(
-          color: isSelected ? Colors.blue : Colors.white,
-          fontSize: 13,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-        ),
-        textAlign: TextAlign.center,
-      );
-    }
-
-    final base = match.group(1)!;
-    final fps = match.group(2)!;
-    return Text.rich(
-      TextSpan(
-        children: [
-          TextSpan(
-            text: base,
-            style: TextStyle(
-              color: isSelected ? Colors.blue : Colors.white,
-              fontSize: 13,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-          TextSpan(
-            text: fps,
-            style: TextStyle(
-              color: isSelected ? Colors.blue : const Color(0xFF4FC3F7),
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ],
-      ),
-      textAlign: TextAlign.center,
     );
   }
 
@@ -1392,104 +1150,4 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
     });
   }
 
-  Widget _buildSpeedPanel() {
-    return Positioned(
-      right: (_speedPanelRight ?? 100) - 12, // 向右偏移
-      bottom: 50, // 对齐底部控制栏上方
-      child: GestureDetector(
-        onTap: () {}, // 拦截点击穿透
-        child: Container(
-          width: 64,
-          constraints: const BoxConstraints(maxHeight: 180), // 降低最大高度
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: _speedOptions.map((speed) {
-                final isSelected = speed == _currentSpeed;
-
-                return InkWell(
-                  onTap: () {
-                    setState(() {
-                      _currentSpeed = speed;
-                      _showSpeedPanel = false;
-                    });
-                    widget.controller.player.setRate(speed);
-                    _startHideTimer();
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-                    alignment: Alignment.center,
-                    child: Text(
-                      speed == 1.0 ? '正常' : '${speed}x',
-                      style: TextStyle(
-                        color: isSelected ? Colors.blue : Colors.white,
-                        fontSize: 12,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomSliderThumbShape extends SliderComponentShape {
-  final double enabledThumbRadius;
-  final Color thumbColor;
-  final Color borderColor;
-  final double borderWidth;
-
-  const _CustomSliderThumbShape({
-    this.enabledThumbRadius = 7.0,
-    this.thumbColor = Colors.blue,
-    this.borderColor = Colors.white,
-    this.borderWidth = 2.0,
-  });
-
-  @override
-  Size getPreferredSize(bool isEnabled, bool isDiscrete) {
-    return Size.fromRadius(enabledThumbRadius);
-  }
-
-  @override
-  void paint(
-    PaintingContext context,
-    Offset center, {
-    required Animation<double> activationAnimation,
-    required Animation<double> enableAnimation,
-    required bool isDiscrete,
-    required TextPainter labelPainter,
-    required RenderBox parentBox,
-    required SliderThemeData sliderTheme,
-    required TextDirection textDirection,
-    required double value,
-    required double textScaleFactor,
-    required Size sizeWithOverflow,
-  }) {
-    final Canvas canvas = context.canvas;
-    final Paint paint = Paint()
-      ..color = thumbColor
-      ..style = PaintingStyle.fill;
-
-    final Paint borderPaint = Paint()
-      ..color = borderColor
-      ..strokeWidth = borderWidth
-      ..style = PaintingStyle.stroke;
-
-    final radius = enabledThumbRadius;
-    final path = Path()..addOval(Rect.fromCircle(center: center, radius: radius));
-
-    canvas.drawPath(path, borderPaint);
-    canvas.drawPath(path, paint);
-  }
 }

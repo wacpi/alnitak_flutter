@@ -6,6 +6,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:audio_session/audio_session.dart';
+import '../config/api_config.dart';
 import '../services/video_stream_service.dart';
 import '../services/cache_service.dart';
 import '../services/history_service.dart';
@@ -168,11 +169,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<int> _tryGetVideoBuffer() async {
     try {
-      final nativePlayer = _player!.platform as NativePlayer;
-      final cacheState = await nativePlayer.getProperty('demuxer-cache-state');
-      if (cacheState.toString().isEmpty) return 0;
-      
-      final cacheStr = cacheState.toString();
+      final cacheStr = _player!.getProperty('demuxer-cache-state');
+      if (cacheStr.isEmpty) return 0;
       final videoRangeMatch = RegExp(r'video\[(\d+)\]:(\d+)-(\d+)').firstMatch(cacheStr);
       if (videoRangeMatch != null) {
         final end = int.tryParse(videoRangeMatch.group(3) ?? '') ?? 0;
@@ -347,18 +345,36 @@ class VideoPlayerController extends ChangeNotifier {
       final isNewPlayer = _player == null;
       if (isNewPlayer) {
         final decodeMode = await getDecodeMode();
-        _player = Player(
+        // 对齐 pili_plus：必须在 mpv_initialize 之前设置的选项通过 options 传入
+        final opt = <String, String>{
+          'video-sync': 'display-resample',
+        };
+        if (Platform.isAndroid) {
+          opt['volume-max'] = '100';
+          // 优先 AAudio：蓝牙下延迟更低，OpenSL ES 在蓝牙时易卡顿/延迟明显（见 docs/BLUETOOTH_LATENCY_COMPARISON.md）
+          opt['ao'] = 'aaudio,opensles,audiotrack';
+          opt['autosync'] = '30';
+        }
+        _player = await Player.create(
           configuration: PlayerConfiguration(
-            title: '',
             bufferSize: 32 * 1024 * 1024,
-            logLevel: MPVLogLevel.v,
+            logLevel: kDebugMode ? MPVLogLevel.warn : MPVLogLevel.error,
+            options: opt,
           ),
         );
         audioHandler.attachPlayer(_player!);
         await _initAudioSession();
         await _configurePlayerOnce(decodeMode);
 
-        _videoController = VideoController(
+        // 对齐 pili_plus：通过 setMediaHeader 设置 HTTP 请求头
+        _player!.setMediaHeader(
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+              'AppleWebKit/537.36 (KHTML, like Gecko) '
+              'Chrome/120.0.0.0 Safari/537.36',
+          referer: ApiConfig.baseUrl,
+        );
+
+        _videoController = await VideoController.create(
           _player!,
           configuration: VideoControllerConfiguration(
             enableHardwareAcceleration: decodeMode != 'no',
@@ -368,20 +384,17 @@ class VideoPlayerController extends ChangeNotifier {
         );
       }
 
-      final nativePlayer = _player!.platform as NativePlayer;
-
-      // pilipala 风格：视频和音频是独立 URL，通过 audio-files 挂载外部音频
+      // 对齐 pili_plus：audio-files 通过 Media(extras:) 传入，不用 setProperty
+      final Map<String, String> extras = {};
       if (dataSource.audioSource != null && dataSource.audioSource!.isNotEmpty) {
         final escapedAudio = Platform.isWindows
             ? dataSource.audioSource!.replaceAll(';', '\\;')
             : dataSource.audioSource!.replaceAll(':', '\\:');
+        extras['audio-files'] = '"$escapedAudio"';
         _logger.logDebug('设置 audio-files: ${dataSource.audioSource}');
-        await nativePlayer.setProperty('audio-files', escapedAudio);
-      } else {
-        await nativePlayer.setProperty('audio-files', '');
       }
 
-      // 方案 B：先注册监听器，再 open(play: false)，等缓冲稳定后再 play，避免首帧音频播两次
+      // 先注册监听器，再 open(play: false)，等缓冲稳定后再 play，避免首帧音频播两次
       startListeners();
 
       final shouldPlayAfterStable = autoPlay;
@@ -390,7 +403,7 @@ class VideoPlayerController extends ChangeNotifier {
         Media(
           dataSource.videoSource,
           start: seekTo,
-          httpHeaders: dataSource.httpHeaders,
+          extras: extras.isEmpty ? null : extras,
         ),
         play: false,
       );
@@ -809,39 +822,29 @@ class VideoPlayerController extends ChangeNotifier {
     return _streamService.getM3u8DataSource(_currentResourceId!, quality);
   }
 
-  /// 首次创建 Player 时配置不变的 mpv 属性
-  /// 这些属性在整个 Player 生命周期内只需设置一次
+  /// 首次创建 Player 时配置运行时可变的 mpv 属性
+  /// 注意：ao / video-sync / autosync / volume-max 已通过 PlayerConfiguration.options 在初始化前设置
+  /// fork 版 setProperty 是同步 void，不需要 await
   Future<void> _configurePlayerOnce(String decodeMode) async {
     if (_player == null) return;
-    final nativePlayer = _player!.platform as NativePlayer;
 
-    // 开启音视频同步日志
-    await nativePlayer.setProperty('msg-level', 'cplayer=v,avsync=v');
+    // seek 精度：双独立流(video+audio-files)必须用精确 seek
+    _player!.setProperty('hr-seek', 'yes');
 
-    // seek 精度：双独立流(video+audio-files)必须用精确 seek，
-    // 否则两个流的关键帧位置不同导致 AV 错位
-    await nativePlayer.setProperty('hr-seek', 'yes');
-
-    // 不覆盖 video-sync，使用 mpv 默认值（audio）
-    await nativePlayer.setProperty('interpolation', 'no');
+    // 禁用帧插值
+    _player!.setProperty('interpolation', 'no');
 
     // fMP4 容错：discardcorrupt 丢弃损坏帧
-    // 注意：不用 genpts / linearize-timestamps（都会破坏 fMP4 的 PTS）
-    await nativePlayer.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
+    _player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
 
     // 禁止 demuxer 回退读取，防止 fMP4 fragment 边界 PTS 回退
-    await nativePlayer.setProperty('demuxer-max-back-bytes', '0');
+    _player!.setProperty('demuxer-max-back-bytes', '0');
 
     // 网络超时配置
-    await nativePlayer.setProperty('network-timeout', '10');
+    _player!.setProperty('network-timeout', '10');
 
     // 解码模式配置
-    await nativePlayer.setProperty('hwdec', decodeMode);
-
-    // Android 特有配置（参考 pili_plus：仅设 volume-max，ao/audio-buffer 用 mpv 默认）
-    if (Platform.isAndroid) {
-      await nativePlayer.setProperty('volume-max', '100');
-    }
+    _player!.setProperty('hwdec', decodeMode);
 
     // 循环模式
     await _syncLoopProperty();
@@ -944,8 +947,7 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _syncLoopProperty() async {
     if (_player == null) return;
     try {
-      final nativePlayer = _player!.platform as NativePlayer;
-      await nativePlayer.setProperty('loop-file', 'no');
+      _player!.setProperty('loop-file', 'no');
     } catch (_) {}
   }
 
@@ -1000,23 +1002,11 @@ class VideoPlayerController extends ChangeNotifier {
 
   // ============ dispose（照搬 pilipala）============
 
-  /// 初始化音频会话（处理电话等音频中断）
+  /// 初始化音频会话（与 pili_plus 一致：使用 .music() 预设，利于 iOS/蓝牙表现）
   Future<void> _initAudioSession() async {
     try {
       _audioSession = await AudioSession.instance;
-      await _audioSession!.configure(const AudioSessionConfiguration(
-        avAudioSessionCategory: AVAudioSessionCategory.playback,
-        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowBluetooth,
-        avAudioSessionMode: AVAudioSessionMode.defaultMode,
-        avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
-        avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
-        androidAudioAttributes: AndroidAudioAttributes(
-          contentType: AndroidAudioContentType.movie,
-          usage: AndroidAudioUsage.media,
-        ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-        androidWillPauseWhenDucked: true,
-      ));
+      await _audioSession!.configure(const AudioSessionConfiguration.music());
 
       _interruptionSubscription = _audioSession!.interruptionEventStream.listen((event) {
         _handleAudioInterruption(event);
@@ -1076,10 +1066,9 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _logPtsState() async {
     if (_player == null) return;
     try {
-      final nativePlayer = _player!.platform as NativePlayer;
-      final videoPtsStr = await nativePlayer.getProperty('video-pts') as String? ?? '0';
-      final audioPtsStr = await nativePlayer.getProperty('audio-pts') as String? ?? '0';
-      final avsyncStr = await nativePlayer.getProperty('avsync') as String? ?? '0';
+      final videoPtsStr = _player!.getProperty('video-pts');
+      final audioPtsStr = _player!.getProperty('audio-pts');
+      final avsyncStr = _player!.getProperty('avsync');
       final videoPts = double.tryParse(videoPtsStr) ?? 0;
       final audioPts = double.tryParse(audioPtsStr) ?? 0;
       final avsync = double.tryParse(avsyncStr) ?? 0;
@@ -1134,8 +1123,7 @@ class VideoPlayerController extends ChangeNotifier {
 
     if (_player != null) {
       try {
-        final nativePlayer = _player!.platform as NativePlayer;
-        await nativePlayer.setProperty('audio-files', '');
+        _player!.setProperty('audio-files', '');
       } catch (_) {}
       await _player!.dispose();
       _player = null;

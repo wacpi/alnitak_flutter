@@ -1,35 +1,61 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// API 配置
-/// 统一管理 API 地址，方便切换 HTTP/HTTPS
+/// 统一管理 API 地址，支持默认值 + SharedPreferences 覆盖（便于环境/调试切换）
 class ApiConfig {
   ApiConfig._();
 
-  /// SharedPreferences key
   static const String _httpsEnabledKey = 'https_enabled';
+  static const String _hostOverrideKey = 'api_host_override';
+  static const String _portOverrideKey = 'api_port_override';
 
-  /// 服务器域名
-  static const String host = 'anime.ayypd.cn';
+  /// 默认服务器域名（可被 override 覆盖）
+  static const String defaultHost = 'anime.ayypd.cn';
+  static const int defaultPort = 9000;
+  static const String defaultShareHost = 'anime.ayypd.cn';
+  static const int defaultSharePort = 3000;
 
-  /// 服务器端口
-  static const int port = 9000;
-
-  /// 分享网站域名
-  static const String shareHost = 'anime.ayypd.cn';
-
-  /// 分享网站端口（默认80）
-  static const int sharePort = 3000;
-
-  /// 是否启用 HTTPS（默认关闭）
   static bool _httpsEnabled = false;
+  static String? _hostOverride;
+  static int? _portOverride;
 
-  /// 获取当前 HTTPS 启用状态
+  /// 当前生效的服务器域名
+  static String get host => _hostOverride ?? defaultHost;
+  /// 当前生效的 API 端口
+  static int get port => _portOverride ?? defaultPort;
+  static String get shareHost => defaultShareHost;
+  static int get sharePort => defaultSharePort;
+
   static bool get httpsEnabled => _httpsEnabled;
 
-  /// 初始化配置（应在 app 启动时调用）
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _httpsEnabled = prefs.getBool(_httpsEnabledKey) ?? false;
+    final savedHost = prefs.getString(_hostOverrideKey);
+    _hostOverride = (savedHost != null && savedHost.isNotEmpty) ? savedHost : null;
+    final savedPort = prefs.getInt(_portOverrideKey);
+    _portOverride = (savedPort != null && savedPort > 0) ? savedPort : null;
+  }
+
+  /// 设置 API 主机/端口覆盖（空字符串或 0 表示恢复默认）
+  static Future<void> setHostPortOverride({String? host, int? port}) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (host != null) {
+      _hostOverride = host.isEmpty ? null : host;
+      if (_hostOverride == null) {
+        await prefs.remove(_hostOverrideKey);
+      } else {
+        await prefs.setString(_hostOverrideKey, _hostOverride!);
+      }
+    }
+    if (port != null) {
+      _portOverride = port <= 0 ? null : port;
+      if (_portOverride == null) {
+        await prefs.remove(_portOverrideKey);
+      } else {
+        await prefs.setInt(_portOverrideKey, _portOverride!);
+      }
+    }
   }
 
   /// 设置 HTTPS 启用状态

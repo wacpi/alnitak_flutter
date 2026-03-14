@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../models/video_detail.dart';
+import '../../services/logger_service.dart';
 import '../../models/comment.dart';
 import '../../services/video_service.dart';
 import '../../services/history_service.dart';
@@ -11,6 +12,7 @@ import '../../utils/auth_state_manager.dart';
 import '../../theme/theme_extensions.dart';
 import '../user/user_space_page.dart';
 import 'widgets/media_player_widget.dart';
+import 'widgets/fullscreen_player_page.dart';
 import 'widgets/author_card.dart';
 import 'widgets/video_info_card.dart';
 import 'widgets/video_action_buttons.dart';
@@ -191,7 +193,13 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
           _actionStatus = actionStatus;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      if (mounted) {
+        LoggerService.instance.logWarning(
+          '刷新用户操作状态失败: $e',
+          tag: 'VideoPlayPage',
+        );
+      }
     }
   }
 
@@ -745,6 +753,46 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
     }
   }
 
+  /// 进入全屏：push 全屏页，使用当前播放器 controller
+  void _openFullscreen() {
+    if (_playerController == null || !mounted || _videoDetail == null) return;
+    final currentResource = _videoDetail!.resources[_currentPart - 1];
+    final title = _videoDetail!.resources.length > 1
+        ? currentResource.title
+        : _videoDetail!.title;
+    Navigator.of(context).push(
+      PageRouteBuilder<void>(
+        opaque: true,
+        transitionDuration: const Duration(milliseconds: 220),
+        reverseTransitionDuration: const Duration(milliseconds: 220),
+        pageBuilder: (context, _, __) => FullscreenPlayerPage(
+          controller: _playerController!,
+          title: title,
+          danmakuController: _danmakuController,
+          onlineCount: _onlineWebSocketService.onlineCount,
+        ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final curve = Curves.easeOut;
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: curve,
+            reverseCurve: Curves.easeIn,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.04),
+                end: Offset.zero,
+              ).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   /// 播放结束回调
   void _onVideoEnded() {
     if (_hasReportedCompleted || _currentDuration <= 0) return;
@@ -972,6 +1020,8 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                 danmakuController: _danmakuController,
                 onPlayingStateChanged: _onPlayingStateChanged,
                 onlineCount: _onlineWebSocketService.onlineCount,
+                isFullscreen: false,
+                onFullscreenToggle: _openFullscreen,
               ),
             ),
 
@@ -998,6 +1048,8 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: VideoActionButtons(
                       vid: _currentVid,
+                    currentPart: _currentPart,
+                    shortId: _videoDetail!.shortId,
                       initialStat: _videoStat!,
                       initialHasLiked: _actionStatus!.hasLiked,
                       initialHasCollected: _actionStatus!.hasCollected,

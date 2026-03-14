@@ -8,6 +8,7 @@ import 'home_page.dart';
 import 'profile_page.dart';
 import '../services/cache_service.dart';
 import '../services/logger_service.dart';
+import '../services/unread_message_service.dart';
 import '../widgets/cached_image_widget.dart';
 
 class MainPage extends StatefulWidget {
@@ -36,6 +37,18 @@ class _MainPageState extends State<MainPage> {
   void initState() {
     super.initState();
     _loadSettings();
+    UnreadMessageService.instance.addListener(_onUnreadChanged);
+    UnreadMessageService.instance.refresh();
+  }
+
+  @override
+  void dispose() {
+    UnreadMessageService.instance.removeListener(_onUnreadChanged);
+    super.dispose();
+  }
+
+  void _onUnreadChanged() {
+    if (mounted) setState(() {});
   }
 
   /// 加载退出即清设置
@@ -147,6 +160,20 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
+  Widget _buildMeTabIcon() {
+    final count = UnreadMessageService.instance.unreadCount;
+    final icon = const Icon(Icons.person);
+    if (count <= 0) return icon;
+    return Badge(
+      label: Text(
+        count > 99 ? '99+' : '$count',
+        style: const TextStyle(fontSize: 10, color: Colors.white),
+      ),
+      backgroundColor: Colors.red,
+      child: icon,
+    );
+  }
+
   /// 退出应用
   Future<void> _exitApp() async {
     _logger.logDebug('[MainPage] 退出应用', tag: 'MainPage');
@@ -178,15 +205,16 @@ class _MainPageState extends State<MainPage> {
             setState(() {
               _currentIndex = index;
             });
+            if (index == 1) UnreadMessageService.instance.refresh();
           },
           type: BottomNavigationBarType.fixed,
-          items: const [
-            BottomNavigationBarItem(
+          items: [
+            const BottomNavigationBarItem(
               icon: Icon(Icons.home),
               label: '首页',
             ),
             BottomNavigationBarItem(
-              icon: Icon(Icons.person),
+              icon: _buildMeTabIcon(),
               label: '我的',
             ),
           ],

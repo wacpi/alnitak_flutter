@@ -12,6 +12,7 @@ import 'creator/creator_center_page.dart';
 import 'history_page.dart';
 import 'message/message_center_page.dart';
 import 'collection/collection_list_page.dart';
+import '../services/unread_message_service.dart';
 
 /// 个人中心页面 - 简洁列表式设计
 class ProfilePage extends StatefulWidget {
@@ -34,15 +35,20 @@ class _ProfilePageState extends State<ProfilePage> {
   @override
   void initState() {
     super.initState();
-    // 监听登录状态变化
     _authStateManager.addListener(_onAuthStateChanged);
+    UnreadMessageService.instance.addListener(_onUnreadChanged);
     _loadUserData();
   }
 
   @override
   void dispose() {
     _authStateManager.removeListener(_onAuthStateChanged);
+    UnreadMessageService.instance.removeListener(_onUnreadChanged);
     super.dispose();
+  }
+
+  void _onUnreadChanged() {
+    if (mounted) setState(() {});
   }
 
   /// 登录状态变化回调
@@ -60,6 +66,7 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _isLoggedIn = isLoggedIn);
 
     if (isLoggedIn) {
+      UnreadMessageService.instance.refresh();
       // 获取用户信息
       final userInfo = await _userService.getUserInfo();
       if (userInfo != null) {
@@ -395,8 +402,11 @@ class _ProfilePageState extends State<ProfilePage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const MessageCenterPage()),
-              );
+              ).then((_) {
+                UnreadMessageService.instance.refresh();
+              });
             },
+            trailing: _buildMessageBadge(),
           ),
           _buildDivider(),
           _buildMenuItem(
@@ -478,6 +488,37 @@ class _ProfilePageState extends State<ProfilePage> {
             },
           ),
         ),
+      ],
+    );
+  }
+
+  /// 消息入口角标（未读数）
+  Widget _buildMessageBadge() {
+    final colors = context.colors;
+    final count = UnreadMessageService.instance.unreadCount;
+    if (count <= 0) {
+      return Icon(Icons.chevron_right, size: 20, color: colors.iconSecondary);
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: Colors.red,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            count > 99 ? '99+' : '$count',
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.white,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Icon(Icons.chevron_right, size: 20, color: colors.iconSecondary),
       ],
     );
   }
