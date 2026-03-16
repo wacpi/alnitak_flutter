@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 播放器缓存清理服务
@@ -39,18 +40,12 @@ class CacheService {
         }
       }
 
-      // 清理临时目录中的分片文件
+      // 仅清理播放器相关前缀文件，避免误删其他模块临时文件
       try {
         final tempFiles = tempDir.listSync();
         for (final entity in tempFiles) {
           if (entity is File) {
-            final fileName = entity.path.split('/').last;
-            if (fileName.endsWith('.ts') ||
-                fileName.endsWith('.m4s') ||
-                fileName.endsWith('.mp4') ||
-                fileName.endsWith('.m3u8') ||
-                fileName.startsWith('mpv') ||
-                fileName.startsWith('libmpv')) {
+            if (shouldDeleteTempFile(entity.path)) {
               try {
                 await entity.delete();
               } catch (_) {}
@@ -69,5 +64,19 @@ class CacheService {
   /// 清理所有临时缓存（退出播放时调用）
   Future<void> cleanupAllTempCache() async {
     await cleanupMpvCache();
+  }
+
+  String _getFileName(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final parts = normalized.split('/');
+    return parts.isNotEmpty ? parts.last : path;
+  }
+
+  @visibleForTesting
+  bool shouldDeleteTempFile(String filePath) {
+    final fileName = _getFileName(filePath).toLowerCase();
+    return fileName.startsWith('mpv') ||
+        fileName.startsWith('libmpv') ||
+        fileName.startsWith('media_kit');
   }
 }

@@ -8,12 +8,16 @@ class AddHistoryRequest {
   final int part;
   final double time;     // 播放进度(秒)，-1 = 已看完
   final int duration;    // ✅ 视频总时长(秒)
+  final int? clientSequence;
+  final int? clientTimestampMs;
 
   AddHistoryRequest({
     required this.vid,
     required this.part,
     required this.time,
     required this.duration,
+    this.clientSequence,
+    this.clientTimestampMs,
   });
 
   Map<String, dynamic> toJson() {
@@ -22,6 +26,8 @@ class AddHistoryRequest {
       'part': part,
       'time': time,
       'duration': duration, // ✅ 新增
+      if (clientSequence != null) 'clientSequence': clientSequence,
+      if (clientTimestampMs != null) 'clientTimestampMs': clientTimestampMs,
     };
   }
 }

@@ -24,6 +24,20 @@ class HistoryService {
   double? _lastSuccessfulProgress;
   int? _lastSuccessfulVid;
   int? _lastSuccessfulPart;
+  final Map<String, double> _lastSubmittedProgress = {};
+
+  String _historyKey(int vid, int part) => '${vid}_$part';
+
+  @visibleForTesting
+  static bool isProgressRegression({
+    required double newProgress,
+    required double? lastProgress,
+    double toleranceSeconds = 0.5,
+  }) {
+    if (newProgress < 0) return false;
+    if (lastProgress == null || lastProgress < 0) return false;
+    return newProgress + toleranceSeconds < lastProgress;
+  }
 
   /// 获取本地缓存的进度
   Future<PlayProgressData?> _getLocalProgress(int vid, int? part) async {
@@ -110,6 +124,22 @@ class HistoryService {
     }
 
     final currentSequence = ++_progressSequence;
+    final key = _historyKey(vid, part);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+
+    // 单调保护：同一视频分P不允许回退写入（-1 完播标记除外）
+    final lastSubmitted = _lastSubmittedProgress[key];
+    if (isProgressRegression(newProgress: time, lastProgress: lastSubmitted)) {
+      return true;
+    }
+
+    if (time >= 0) {
+      _lastSubmittedProgress[key] = lastSubmitted == null
+          ? time
+          : (time > lastSubmitted ? time : lastSubmitted);
+    } else {
+      _lastSubmittedProgress[key] = time;
+    }
 
     // 去重：跳过完全相同的上报
     if (_lastSuccessfulVid == vid &&
@@ -126,6 +156,8 @@ class HistoryService {
           part: part,
           time: time,
           duration: duration,
+          clientSequence: currentSequence,
+          clientTimestampMs: nowMs,
         ).toJson(),
       );
 
@@ -158,6 +190,7 @@ class HistoryService {
     _lastSuccessfulVid = null;
     _lastSuccessfulPart = null;
     _lastSuccessfulProgress = null;
+    _lastSubmittedProgress.clear();
   }
 
   /// 获取播放进度

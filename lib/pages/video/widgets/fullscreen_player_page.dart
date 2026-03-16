@@ -90,8 +90,8 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
     final c = widget.controller;
     if (!c.isPlayerInitialized.value) {
       return const ColoredBox(
-        color: Colors.black,
-        child: Center(child: CircularProgressIndicator(color: Colors.white)),
+        color: Colors.transparent,
+        child: Center(child: CircularProgressIndicator()),
       );
     }
 

@@ -181,6 +181,22 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant CustomPlayerUI oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.forceFullscreen != widget.forceFullscreen) {
+      if (!_fullscreen) {
+        _showQualityPanel = false;
+        _showSpeedPanel = false;
+        _showDanmakuSettings = false;
+      }
+      _wasFullscreen = _fullscreen;
+      if (_showControls) {
+        _startHideTimer();
+      }
+    }
+  }
+
   // ============ UI 控制逻辑 ============
 
   void _startHideTimer() {
@@ -338,7 +354,11 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
     } else if (pos.dx > rightZone) {
       _seekRelative(10, Icons.fast_forward, '+10秒');
     } else {
-      widget.controller.player.playOrPause();
+      if (widget.controller.player.state.playing) {
+        widget.logic.pause();
+      } else {
+        widget.logic.play();
+      }
       _toggleControls();
     }
   }
@@ -420,14 +440,6 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
                     onHorizontalDragEnd: (_) => _onDragEnd(),
                     child: Container(color: Colors.transparent),
                   ),
-
-                  // 1.5 亮度遮罩
-                  if (_playerBrightness < 1.0)
-                    IgnorePointer(
-                      child: Container(
-                        color: Colors.black.withValues(alpha: (1.0 - _playerBrightness).clamp(0.0, 0.8)),
-                      ),
-                    ),
 
                   // 2. 锁定按钮
                   if (_isLocked && !_showControls)
@@ -823,7 +835,8 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
                   if (completed) {
                     return GestureDetector(
                       onTap: () {
-                        widget.logic.play(repeat: true);
+                        widget.logic.seek(Duration.zero);
+                        widget.logic.play();
                         _startHideTimer();
                       },
                       child: Container(
@@ -901,7 +914,11 @@ class _CustomPlayerUIState extends State<CustomPlayerUI> with SingleTickerProvid
               padding: EdgeInsets.zero,
               constraints: BoxConstraints(minWidth: fullscreen ? 36 : 32, minHeight: 32),
               onPressed: () {
-                widget.controller.player.playOrPause();
+                if (widget.controller.player.state.playing) {
+                  widget.logic.pause();
+                } else {
+                  widget.logic.play();
+                }
                 _startHideTimer();
               },
             );

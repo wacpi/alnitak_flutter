@@ -46,6 +46,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // 解码模式：'no' = 软解码，'auto-copy' = 硬解码
   String _decodeMode = 'no';
+  // 扩展缓冲：true=32MB，false=16MB
+  bool _expandBuffer = true;
+  // 音频输出（仅 Android）：audiotrack/aaudio/opensles
+  String _audioOutput = 'audiotrack';
 
   @override
   void initState() {
@@ -56,6 +60,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _calculateCacheSize();
     _loadMaxCacheSetting();
     _loadDecodeModeSetting();
+    _loadExpandBufferSetting();
+    _loadAudioOutputSetting();
   }
 
   /// 检查登录状态
@@ -219,6 +225,58 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('解码模式已更改，重新打开视频后生效'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  /// 加载扩展缓冲设置
+  Future<void> _loadExpandBufferSetting() async {
+    final value = await VideoPlayerController.getExpandBuffer();
+    if (mounted) {
+      setState(() {
+        _expandBuffer = value;
+      });
+    }
+  }
+
+  /// 保存扩展缓冲设置
+  Future<void> _saveExpandBufferSetting(bool value) async {
+    await VideoPlayerController.setExpandBuffer(value);
+    setState(() {
+      _expandBuffer = value;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('扩展缓冲已更改，重新打开视频后生效'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  /// 加载音频输出设置
+  Future<void> _loadAudioOutputSetting() async {
+    final value = await VideoPlayerController.getAudioOutput();
+    if (mounted) {
+      setState(() {
+        _audioOutput = value;
+      });
+    }
+  }
+
+  /// 保存音频输出设置
+  Future<void> _saveAudioOutputSetting(String value) async {
+    await VideoPlayerController.setAudioOutput(value);
+    setState(() {
+      _audioOutput = value;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('音频输出已更改，重新打开视频后生效'),
           duration: Duration(seconds: 2),
         ),
       );
@@ -535,6 +593,53 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 显示音频输出选择对话框（仅 Android）
+  void _showAudioOutputDialog() {
+    final options = [
+      {'value': 'audiotrack', 'label': 'AudioTrack', 'desc': '兼容性好（默认）'},
+      {'value': 'aaudio', 'label': 'AAudio', 'desc': '低延迟，蓝牙推荐'},
+      {'value': 'opensles', 'label': 'OpenSL ES', 'desc': '部分设备更稳定'},
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('音频输出'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: options.map((option) {
+            final isSelected = option['value'] == _audioOutput;
+            return ListTile(
+              title: Text(option['label']!),
+              subtitle: Text(
+                option['desc']!,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+              ),
+              trailing: isSelected
+                  ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary)
+                  : null,
+              onTap: () {
+                Navigator.pop(context);
+                if (option['value'] != _audioOutput) {
+                  _saveAudioOutputSetting(option['value']!);
+                }
+              },
+            );
+          }).toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 打开 URL
   Future<void> _launchUrl(String url) async {
     final uri = Uri.parse(url);
@@ -601,6 +706,25 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: _showDecodeModeDialog,
               colors: colors,
             ),
+            if (Platform.isAndroid) ...[
+              _buildDivider(colors),
+              _buildSwitchTile(
+                icon: Icons.storage_outlined,
+                title: '扩展缓冲',
+                subtitle: '开启 32MB 缓冲，关闭 16MB（弱网可关闭以节省内存）',
+                value: _expandBuffer,
+                onChanged: _saveExpandBufferSetting,
+                colors: colors,
+              ),
+              _buildDivider(colors),
+              _buildTappableTile(
+                icon: Icons.volume_up_outlined,
+                title: '音频输出',
+                value: VideoPlayerController.getAudioOutputDisplayName(_audioOutput),
+                onTap: _showAudioOutputDialog,
+                colors: colors,
+              ),
+            ],
           ], colors),
 
           const SizedBox(height: 12),

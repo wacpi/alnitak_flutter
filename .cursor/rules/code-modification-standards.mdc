@@ -1,0 +1,36 @@
+---
+description: 代码修改必须遵循的规范（禁止废话、重复、生命周期/逻辑冲突，修改前考虑引用与影响，修改后全局检查）
+alwaysApply: true
+---
+
+# 代码修改规范（强制遵循）
+
+## 禁止项
+
+- **废话代码**：无意义的注释、冗余逻辑、无用变量
+- **重复性代码**：相同逻辑出现多次 → 提取为方法/函数复用
+- **生命周期异常或冲突**：dispose 后仍回调、异步完成时对象已销毁、attach/detach 顺序错误
+- **逻辑冲突/竞争/干扰**：多路径导致状态不一致、竞态条件、重复执行
+
+## 修改前必须
+
+1. **查引用**：被删/改的符号有哪些调用方？grep 或语义搜索确认
+2. **理解原设计**：为何这样写？依赖关系、职责划分
+3. **评估影响**：改了会波及哪些模块？删了会不会断链？
+
+## 修改后必须
+
+- 运行 `flutter analyze` 或等效全局检查
+- 确认无 error、warning、info 提示
+
+## 示例
+
+```
+// ❌ 重复
+if (_onSeek != null) await _onSeek!(pos); else await _player?.seek(pos);  // 出现 3 次
+
+// ✅ 提取
+Future<void> _seekTo(Duration target) async {
+  await (_onSeek != null ? _onSeek!(target) : _player?.seek(target));
+}
+```

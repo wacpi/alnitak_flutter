@@ -81,6 +81,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   // 当前资源ID和初始位置（驱动 MediaPlayerWidget）
   int? _currentResourceId;
   double? _currentInitialPosition;
+  int _pageRequestToken = 0;
 
   // 评论相关
   int _totalComments = 0;
@@ -90,6 +91,17 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   final GlobalKey<PartListState> _partListKey = GlobalKey<PartListState>();
   final GlobalKey<CollectionListState> _collectionListKey = GlobalKey<CollectionListState>();
   final GlobalKey<RecommendListState> _recommendListKey = GlobalKey<RecommendListState>();
+
+  // 切换分P防串台
+  int _changePartToken = 0;
+
+  int _nextPageRequestToken() => ++_pageRequestToken;
+
+  bool _isActivePageRequest(int token, {int? expectedVid}) {
+    if (!mounted || token != _pageRequestToken) return false;
+    if (expectedVid != null && _currentVid != expectedVid) return false;
+    return true;
+  }
 
   @override
   void initState() {
@@ -280,13 +292,16 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
 
   /// 加载视频数据
   Future<void> _loadVideoData({int? part}) async {
+    final requestToken = _nextPageRequestToken();
+    final requestVid = _currentVid;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      final videoDetail = await _videoService.getVideoDetail(_currentVid);
+      final videoDetail = await _videoService.getVideoDetail(requestVid);
+      if (!_isActivePageRequest(requestToken, expectedVid: requestVid)) return;
 
       if (videoDetail == null) {
         setState(() {
@@ -304,11 +319,12 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
         _isLoading = false;
       });
 
-      _fetchProgressAndRestore(part: part);
-      _loadSecondaryData(videoDetail.author.uid);
-      _onlineWebSocketService.connect(_currentVid);
+      _fetchProgressAndRestore(part: part, requestToken: requestToken, requestVid: requestVid);
+      _loadSecondaryData(videoDetail.author.uid, requestToken: requestToken, requestVid: requestVid);
+      _onlineWebSocketService.connect(requestVid);
 
     } catch (e) {
+      if (!_isActivePageRequest(requestToken, expectedVid: requestVid)) return;
       setState(() {
         _errorMessage = '加载失败，请重试';
         _isLoading = false;
@@ -317,12 +333,13 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   }
 
   /// 异步获取进度并恢复播放
-  Future<void> _fetchProgressAndRestore({int? part}) async {
+  Future<void> _fetchProgressAndRestore({int? part, required int requestToken, required int requestVid}) async {
     try {
       final progressData = await _historyService.getProgress(
-        vid: _currentVid,
+        vid: requestVid,
         part: part,
       );
+      if (!_isActivePageRequest(requestToken, expectedVid: requestVid)) return;
 
       if (progressData == null) {
         _startPlayback(part ?? 1, null);
@@ -351,6 +368,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       _startPlayback(targetPart, adjustedProgress);
 
     } catch (e) {
+      if (!_isActivePageRequest(requestToken, expectedVid: requestVid)) return;
       _startPlayback(part ?? 1, null);
     }
   }
@@ -385,20 +403,20 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   }
 
   /// 后台加载次要数据（统计、操作状态、评论预览）
-  Future<void> _loadSecondaryData(int authorUid) async {
+  Future<void> _loadSecondaryData(int authorUid, {required int requestToken, required int requestVid}) async {
     final futures = await Future.wait([
-      _videoService.getVideoStat(_currentVid).catchError((e) {
+      _videoService.getVideoStat(requestVid).catchError((e) {
         return null;
       }),
-      _videoService.getComments(vid: _currentVid, page: 1, pageSize: 1).catchError((e) {
+      _videoService.getComments(vid: requestVid, page: 1, pageSize: 1).catchError((e) {
         return null;
       }),
-      _videoService.getUserActionStatus(_currentVid, authorUid).catchError((e) {
+      _videoService.getUserActionStatus(requestVid, authorUid).catchError((e) {
         return null;
       }),
     ]);
 
-    if (!mounted) return;
+    if (!_isActivePageRequest(requestToken, expectedVid: requestVid)) return;
 
     final videoStat = futures[0] as VideoStat?;
     final commentResponse = futures[1] as CommentListResponse?;
@@ -422,13 +440,15 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
 
   /// 刷新评论预览（发表评论后调用）
   Future<void> _refreshCommentPreview() async {
+    final requestVid = _currentVid;
     try {
       final commentResponse = await _videoService.getComments(
-        vid: _currentVid,
+        vid: requestVid,
         page: 1,
         pageSize: 1,
       );
-      if (commentResponse != null && mounted) {
+      if (!mounted || _currentVid != requestVid) return;
+      if (commentResponse != null) {
         setState(() {
           _totalComments = commentResponse.total;
           _latestComment = commentResponse.comments.isNotEmpty
@@ -443,10 +463,12 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   /// 刷新作者信息（用于从个人中心返回后更新）
   Future<void> _refreshAuthorInfo() async {
     if (_videoDetail == null) return;
+    final requestVid = _currentVid;
 
     try {
-      final videoDetail = await _videoService.getVideoDetail(_currentVid);
-      if (videoDetail != null && mounted) {
+      final videoDetail = await _videoService.getVideoDetail(requestVid);
+      if (!mounted || _currentVid != requestVid) return;
+      if (videoDetail != null) {
         setState(() {
           _videoDetail = videoDetail;
         });
@@ -465,6 +487,8 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       );
       return;
     }
+
+    final requestToken = ++_changePartToken;
 
     // 先快照旧值，用于切换前的进度上报
     final oldPart = _currentPart;
@@ -490,6 +514,10 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       vid: _currentVid,
       part: part,
     );
+
+    // 防串台：用户快速切换分P时丢弃旧请求结果
+    if (!mounted || requestToken != _changePartToken) return;
+
     var progress = progressData?.progress;
 
     if (progress != null && progress == -1) {
@@ -597,11 +625,12 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   /// [targetPart] 指定目标分P，为null时通过历史进度决定
   Future<void> _loadVideoDataSeamless({int? targetPart}) async {
     final targetVid = _currentVid;
+    final requestToken = _nextPageRequestToken();
 
     try {
       final videoDetail = await _videoService.getVideoDetail(targetVid);
 
-      if (_currentVid != targetVid) {
+      if (!_isActivePageRequest(requestToken, expectedVid: targetVid)) {
         return;
       }
 
@@ -624,9 +653,18 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
 
       _onlineWebSocketService.connect(targetVid);
 
-      _loadSecondaryData(videoDetail.author.uid);
+      _loadSecondaryData(
+        videoDetail.author.uid,
+        requestToken: requestToken,
+        requestVid: targetVid,
+      );
 
-      _fetchProgressAndRestoreSeamless(targetVid: targetVid, videoDetail: videoDetail, targetPart: targetPart);
+      _fetchProgressAndRestoreSeamless(
+        targetVid: targetVid,
+        videoDetail: videoDetail,
+        targetPart: targetPart,
+        requestToken: requestToken,
+      );
 
     } catch (_) {
     }
@@ -634,18 +672,23 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
 
   /// 无缝加载时异步获取进度
   /// [targetPart] 指定目标分P，为null时通过历史进度决定
-  Future<void> _fetchProgressAndRestoreSeamless({required int targetVid, required VideoDetail videoDetail, int? targetPart}) async {
+  Future<void> _fetchProgressAndRestoreSeamless({
+    required int targetVid,
+    required VideoDetail videoDetail,
+    int? targetPart,
+    required int requestToken,
+  }) async {
     try {
       if (targetPart != null) {
         // 明确指定了分P（如从合集列表点击特定分P），直接播放该分P
-        if (_currentVid != targetVid) return;
+        if (!_isActivePageRequest(requestToken, expectedVid: targetVid)) return;
         _startPlaybackSeamless(videoDetail, targetPart, null);
         return;
       }
 
       final progressData = await _historyService.getProgress(vid: targetVid, part: null);
 
-      if (_currentVid != targetVid) return;
+      if (!_isActivePageRequest(requestToken, expectedVid: targetVid)) return;
 
       if (progressData == null) {
         _startPlaybackSeamless(videoDetail, 1, null);
@@ -674,6 +717,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
       _startPlaybackSeamless(videoDetail, historyPart, adjustedProgress);
 
     } catch (e) {
+      if (!_isActivePageRequest(requestToken, expectedVid: targetVid)) return;
       _startPlaybackSeamless(videoDetail, targetPart ?? 1, null);
     }
   }
@@ -859,7 +903,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
           AspectRatio(
             aspectRatio: 16 / 9,
             child: Container(
-              color: Colors.black,
+              color: Colors.transparent,
               child: const Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -867,10 +911,10 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                     SizedBox(
                       width: 48,
                       height: 48,
-                      child: CircularProgressIndicator(color: Colors.white),
+                      child: CircularProgressIndicator(),
                     ),
                     SizedBox(height: 12),
-                    Text('加载中...', style: TextStyle(color: Colors.white70, fontSize: 14)),
+                    Text('加载中...', style: TextStyle(fontSize: 14)),
                   ],
                 ),
               ),

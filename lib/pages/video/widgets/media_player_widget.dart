@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -115,11 +117,11 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   void _initializePlayer() {
     if (_isDisposed) return;
     if (_controller == null || widget.resourceId == null) return;
+    _controller!.setInitialDurationHint(widget.duration);
 
     _controller!.initialize(
       resourceId: widget.resourceId!,
       initialPosition: widget.initialPosition,
-      duration: widget.duration,
     );
   }
 
@@ -133,10 +135,16 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
       _setMetadata();
       _initializePlayer();
     }
+    if (oldWidget.title != widget.title ||
+        oldWidget.author != widget.author ||
+        oldWidget.coverUrl != widget.coverUrl) {
+      _setMetadata();
+    }
 
     if (oldWidget.onVideoEnd != widget.onVideoEnd ||
         oldWidget.onProgressUpdate != widget.onProgressUpdate ||
-        oldWidget.onPlayingStateChanged != widget.onPlayingStateChanged) {
+        oldWidget.onPlayingStateChanged != widget.onPlayingStateChanged ||
+        oldWidget.onQualityChanged != widget.onQualityChanged) {
       _bindCallbacks();
     }
   }
@@ -154,7 +162,10 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
     _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
 
-    _controller?.dispose();
+    final controller = _controller;
+    if (controller != null) {
+      unawaited(controller.dispose());
+    }
     _controller = null;
 
     SystemChrome.setPreferredOrientations(
@@ -269,7 +280,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
 
   Widget _buildLoadingWidget() {
     return const ColoredBox(
-      color: Colors.black,
+      color: Colors.transparent,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -277,10 +288,10 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
             SizedBox(
               width: 48,
               height: 48,
-              child: CircularProgressIndicator(color: Colors.white),
+              child: CircularProgressIndicator(),
             ),
             SizedBox(height: 12),
-            Text('加载中...', style: TextStyle(color: Colors.white70, fontSize: 14)),
+            Text('加载中...', style: TextStyle(fontSize: 14)),
           ],
         ),
       ),

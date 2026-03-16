@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
@@ -82,9 +83,11 @@ class VideoPlayerController extends ChangeNotifier {
 
   Duration _userIntendedPosition = Duration.zero;
   Duration _lastReportedPosition = Duration.zero;
+  int _lastPtsLoggedSecond = -1;
   int? _lastProgressFetchTime;
   // pilipala 风格：用 List 管理所有 stream subscription，方便批量取消/重建
   List<StreamSubscription> _subscriptions = [];
+  bool _listenersStarted = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   Timer? _stalledTimer;
@@ -92,6 +95,18 @@ class VideoPlayerController extends ChangeNotifier {
   /// 缓冲持续超过此时间才对外置 isBuffering=true（避免短暂抖动闪加载，参考 YouTube/哔哩哔哩）
   Timer? _bufferingShowTimer;
   static const int _bufferingSustainMs = 1500;
+  static const int _videoEndDebounceMs = 800;
+  static const int _startupReadyTimeoutMs = 2200;
+  static const int _startupReadyPollMs = 80;
+
+  int _playbackSessionId = 0;
+  DateTime? _lastVideoEndAt;
+  Duration? _pendingSeekAfterSwitch;
+  Future<void> _operationQueue = Future.value();
+  final int _audioOwnerId = identityHashCode(Object());
+  bool _seekInFlight = false;
+  Duration? _latestSeekRequest;
+  DateTime? _lastSeekAt;
 
 
   int? _currentVid;
@@ -112,6 +127,8 @@ class VideoPlayerController extends ChangeNotifier {
   static const String _loopModeKey = 'video_loop_mode';
   static const String _backgroundPlayKey = 'background_play_enabled';
   static const String _decodeModeKey = 'video_decode_mode';
+  static const String _expandBufferKey = 'video_expand_buffer';
+  static const String _audioOutputKey = 'video_audio_output';
 
   SharedPreferences? _prefs;
 
@@ -123,6 +140,33 @@ class VideoPlayerController extends ChangeNotifier {
   bool _settingsLoaded = false;
 
   VideoPlayerController();
+
+  int _nextPlaybackSessionId() => ++_playbackSessionId;
+
+  bool _isSessionActive(int sessionId) {
+    return !_isDisposed && _player != null && _playbackSessionId == sessionId;
+  }
+
+  Future<void> _enqueueOperation(Future<void> Function() operation) {
+    _operationQueue = _operationQueue.then((_) => operation()).catchError((e, st) {
+      _logger.logError(
+        message: '播放操作队列执行失败',
+        error: e,
+        stackTrace: st is StackTrace ? st : StackTrace.current,
+      );
+    });
+    return _operationQueue;
+  }
+
+  void _notifyVideoEndOnce() {
+    final now = DateTime.now();
+    if (_lastVideoEndAt != null &&
+        now.difference(_lastVideoEndAt!).inMilliseconds < _videoEndDebounceMs) {
+      return;
+    }
+    _lastVideoEndAt = now;
+    onVideoEnd?.call();
+  }
 
   // ============ pili_plus 风格：秒级更新方法（统一封装）============
 
@@ -191,6 +235,12 @@ class VideoPlayerController extends ChangeNotifier {
         onProgressUpdate!(position, _player!.state.duration);
       }
     }
+  }
+
+  /// 预设总时长（用于播放器初始化早期，避免进度条在 duration 未就绪时瞬间满格）
+  void setInitialDurationHint(double? duration) {
+    if (duration == null || duration <= 0) return;
+    durationSeconds.value = duration.toInt();
   }
 
   /// 用户开始拖拽进度条
@@ -294,13 +344,14 @@ class VideoPlayerController extends ChangeNotifier {
   /// 2. 创建 Player（??= 复用），由 mpv 原生解析媒体内音轨
   /// 3. startListeners() 先注册监听
   /// 4. player.open(Media(..., start: seekTo), play: false)
-  /// 5. 若 autoPlay：立即 play()（与 pili_plus 一致）
+  /// 5. 若 autoPlay：等待视频就绪后再 play（防止音频先起）
   Future<void> setDataSource(
     DataSource dataSource, {
     Duration seekTo = Duration.zero,
     bool autoPlay = true,
   }) async {
     if (_isDisposed) return;
+    final sessionId = _nextPlaybackSessionId();
 
     try {
       isLoading.value = true;
@@ -318,6 +369,7 @@ class VideoPlayerController extends ChangeNotifier {
       _hasTriggeredCompletion = false;
       _hasJustCompleted = false;
       _isSeeking = false;
+      _pendingSeekAfterSwitch = null;
 
       // pili_plus 风格：removeListeners 后立即预设 sliderPosition = seekTo
       // 防止 UI 在 open() → startListeners() 之间看到 position=0 的闪跳
@@ -328,25 +380,33 @@ class VideoPlayerController extends ChangeNotifier {
       final isNewPlayer = _player == null;
       if (isNewPlayer) {
         final decodeMode = await getDecodeMode();
+        final expandBuffer = await getExpandBuffer();
+        final audioOutput = await getAudioOutput();
         // 对齐 pili_plus：必须在 mpv_initialize 之前设置的选项通过 options 传入
         final opt = <String, String>{
           'video-sync': 'display-resample',
         };
         if (Platform.isAndroid) {
           opt['volume-max'] = '100';
-          // 使用 Android 自带音频输出后端
-          opt['ao'] = 'audiotrack';
+          opt['ao'] = audioOutput;
           // 对齐 pili_plus 默认值：让视频时钟更平滑追随音频时钟
           opt['autosync'] = '30';
         }
+        final bufferSizeBytes = expandBuffer ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
         _player = await Player.create(
           configuration: PlayerConfiguration(
-            bufferSize: 32 * 1024 * 1024,
+            bufferSize: bufferSizeBytes,
             logLevel: kDebugMode ? MPVLogLevel.warn : MPVLogLevel.error,
             options: opt,
           ),
         );
-        audioHandler.attachPlayer(_player!);
+        audioHandler.attachPlayer(
+          _player!,
+          ownerId: _audioOwnerId,
+          onPlay: () => play(),
+          onPause: () => pause(),
+          onSeek: (pos) => seek(pos),
+        );
         await _initAudioSession();
         await _configurePlayerOnce(decodeMode);
 
@@ -393,22 +453,81 @@ class VideoPlayerController extends ChangeNotifier {
         play: false,
       );
 
+      if (!_isSessionActive(sessionId)) return;
+
       isLoading.value = false;
       isPlayerInitialized.value = true;
 
       if (shouldPlayAfterStable && !_isDisposed) {
-        // 对齐 pili_plus：open(play: false) 后立即 play
+        // 等待视频流具备起播条件，降低“音频先播放、视频晚起”概率
+        await _waitForVideoReadyBeforePlay(sessionId);
+        if (!_isSessionActive(sessionId)) return;
         await play();
       }
 
     } catch (e) {
+      if (!_isSessionActive(sessionId)) return;
       _isSeeking = false;
-      // 失败后恢复 listeners，防止播放器变成"聋子"（进度不再上报）
-      if (_player != null) startListeners();
       isLoading.value = false;
       errorMessage.value = ErrorHandler.getErrorMessage(e);
       _logger.logError(message: 'setDataSource 失败', error: e, stackTrace: StackTrace.current);
     }
+  }
+
+  Future<void> _waitForVideoReadyBeforePlay(int sessionId) async {
+    final stopwatch = Stopwatch()..start();
+
+    while (_isSessionActive(sessionId) &&
+        stopwatch.elapsedMilliseconds < _startupReadyTimeoutMs) {
+      final hasVideoParams = _hasVideoOutputParams();
+      final videoBuffer = await _tryGetVideoBuffer();
+      final demuxerBufferMs = _player?.state.buffer.inMilliseconds ?? 0;
+
+      final isReady = (hasVideoParams && (videoBuffer >= 1 || demuxerBufferMs >= 800)) ||
+          videoBuffer >= 2;
+      if (isReady) {
+        return;
+      }
+
+      await Future.delayed(const Duration(milliseconds: _startupReadyPollMs));
+    }
+
+    _logger.logDebug(
+      '起播门控超时，兜底继续播放: ${stopwatch.elapsedMilliseconds}ms',
+    );
+  }
+
+  bool _hasVideoOutputParams() {
+    if (_player == null) return false;
+    try {
+      final raw = _player!.getProperty('video-out-params');
+      if (_hasValidVideoSize(raw)) return true;
+      final fallback = _player!.getProperty('video-params');
+      return _hasValidVideoSize(fallback);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _hasValidVideoSize(String raw) {
+    if (raw.isEmpty) return false;
+
+    try {
+      final dynamic parsed = jsonDecode(raw);
+      if (parsed is Map) {
+        final w = int.tryParse('${parsed['w'] ?? ''}') ?? 0;
+        final h = int.tryParse('${parsed['h'] ?? ''}') ?? 0;
+        if (w > 0 && h > 0) return true;
+      }
+    } catch (_) {
+      // 非 JSON 字符串时走正则兜底
+    }
+
+    final wMatch = RegExp(r'(?:^|[\s,{])w(?:=|:)\s*"?(\d+)').firstMatch(raw);
+    final hMatch = RegExp(r'(?:^|[\s,{])h(?:=|:)\s*"?(\d+)').firstMatch(raw);
+    final w = int.tryParse(wMatch?.group(1) ?? '') ?? 0;
+    final h = int.tryParse(hMatch?.group(1) ?? '') ?? 0;
+    return w > 0 && h > 0;
   }
 
   // ============ seek（统一封装）============
@@ -418,18 +537,48 @@ class VideoPlayerController extends ChangeNotifier {
     if (position < Duration.zero) position = Duration.zero;
 
     _userIntendedPosition = position;
-    _isSeeking = true;
+    _lastSeekAt = DateTime.now();
+    if (isSwitchingQuality.value) {
+      _pendingSeekAfterSwitch = position;
+      return;
+    }
 
+    _latestSeekRequest = position;
+    if (_seekInFlight) return;
+
+    _seekInFlight = true;
     try {
-      await _seekInternal(position);
-    } catch (e) {
-      _logger.logDebug('seek 错误: $e');
+      while (!_isDisposed && _player != null && _latestSeekRequest != null) {
+        final target = _latestSeekRequest!;
+        _latestSeekRequest = null;
+
+        _isSeeking = true;
+        try {
+          await _seekInternal(target);
+        } catch (e) {
+          _logger.logDebug('seek 错误: $e');
+        } finally {
+          _isSeeking = false;
+        }
+      }
     } finally {
-      _isSeeking = false;
+      _seekInFlight = false;
     }
   }
 
+  static const int _seekBufferWaitTimeoutMs = 300;
+
+  Future<void> _seekBufferWaitIfNeeded() async {
+    if (_player == null || _player!.state.buffer != Duration.zero) return;
+    try {
+      await _player!.stream.buffer.first
+          .timeout(const Duration(milliseconds: _seekBufferWaitTimeoutMs));
+    } catch (_) {}
+  }
+
   Future<void> _seekInternal(Duration position) async {
+    await _seekBufferWaitIfNeeded();
+
     if (_player!.state.duration.inSeconds != 0) {
       await _player!.seek(position);
     } else {
@@ -444,6 +593,8 @@ class VideoPlayerController extends ChangeNotifier {
         if (_player!.state.duration.inSeconds != 0) {
           t.cancel();
           _seekTimer = null;
+          await _seekBufferWaitIfNeeded();
+          if (_isDisposed || _player == null) return;
           try {
             await _player!.seek(position);
           } catch (_) {}
@@ -457,26 +608,44 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> changeQuality(String quality) async {
     if (_isDisposed || _player == null) return;
-    if (currentQuality.value == quality || _currentResourceId == null) return;
-
-    final playerPos = _player!.state.position;
-    final position = playerPos.inMilliseconds > 0 ? playerPos : _userIntendedPosition;
-    _logger.logDebug('changeQuality: $quality, 保存位置 ${position.inSeconds}s');
-
-    isSwitchingQuality.value = true;
-
-    try {
-      await _reloadWithDataSource(quality, position);
-      currentQuality.value = quality;
-      await _savePreferredQuality(quality);
-      _userIntendedPosition = position;
-      onQualityChanged?.call(quality);
-    } catch (e) {
-      _logger.logError(message: '切换清晰度失败', error: e);
-      errorMessage.value = '切换清晰度失败';
-    } finally {
-      isSwitchingQuality.value = false;
+    if (currentQuality.value == quality || _currentResourceId == null || isSwitchingQuality.value) {
+      return;
     }
+
+    await _enqueueOperation(() async {
+      if (_isDisposed || _player == null) return;
+      if (currentQuality.value == quality || _currentResourceId == null) return;
+
+      final playerPos = _player!.state.position;
+      final position = playerPos.inMilliseconds > 0 ? playerPos : _userIntendedPosition;
+      _logger.logDebug('changeQuality: $quality, 保存位置 ${position.inSeconds}s');
+
+      isSwitchingQuality.value = true;
+
+      try {
+        await _reloadWithDataSource(quality, position);
+        currentQuality.value = quality;
+        await _savePreferredQuality(quality);
+        _userIntendedPosition = position;
+        onQualityChanged?.call(quality);
+      } catch (e) {
+        _logger.logError(message: '切换清晰度失败', error: e);
+        errorMessage.value = '切换清晰度失败';
+      } finally {
+        isSwitchingQuality.value = false;
+      }
+
+      final pendingSeek = _pendingSeekAfterSwitch;
+      _pendingSeekAfterSwitch = null;
+      if (pendingSeek != null && !_isDisposed && _player != null) {
+        _isSeeking = true;
+        try {
+          await _seekInternal(pendingSeek);
+        } finally {
+          _isSeeking = false;
+        }
+      }
+    });
   }
 
   /// 重新加载数据源（用于清晰度切换、卡顿恢复等场景）
@@ -504,10 +673,11 @@ class VideoPlayerController extends ChangeNotifier {
     _lastProgressFetchTime = now;
 
     if (_currentVid == null) return;
+    final sessionId = _playbackSessionId;
 
     if (!isPlayerInitialized.value) {
       Future.delayed(const Duration(milliseconds: 500), () async {
-        if (!_isDisposed && _currentVid != null) {
+        if (_isSessionActive(sessionId) && _currentVid != null) {
           await _doFetchAndRestoreProgress();
         }
       });
@@ -546,10 +716,13 @@ class VideoPlayerController extends ChangeNotifier {
   ///
   /// 每次 setDataSource 时先 removeListeners，加载后重新 startListeners
   void startListeners() {
-    if (_player == null) return;
+    if (_player == null || _listenersStarted) return;
+    _listenersStarted = true;
+    final sessionId = _playbackSessionId;
 
     _subscriptions.addAll([
       _player!.stream.playing.listen((playing) {
+        if (!_isSessionActive(sessionId)) return;
         if (playing && _hasTriggeredCompletion) {
           _hasTriggeredCompletion = false;
         }
@@ -561,6 +734,7 @@ class VideoPlayerController extends ChangeNotifier {
       }),
 
       _player!.stream.completed.listen((completed) {
+        if (!_isSessionActive(sessionId)) return;
         if (_isDisposed || _isDisposing) return;
         
         if (completed && !_hasTriggeredCompletion && !_isSeeking && !isSwitchingQuality.value) {
@@ -584,16 +758,8 @@ class VideoPlayerController extends ChangeNotifier {
           _hasTriggeredCompletion = true;
           _hasJustCompleted = true;
 
-          // 触发播放结束回调
-          onVideoEnd?.call();
-
-          if (loopMode.value == LoopMode.on) {
-            // 循环模式（参考 pili_plus）：play(repeat:true) 原子 seek+play
-            _hasTriggeredCompletion = false;
-            _hasJustCompleted = false;
-            _logger.logDebug('循环模式: play(repeat:true)');
-            play(repeat: true);
-          }
+          // 触发播放结束回调（loop-file=inf 时 mpv 不触发 completed，此处仅非循环模式走到）
+          _notifyVideoEndOnce();
         }
         if (!completed) {
           _hasTriggeredCompletion = false;
@@ -601,6 +767,7 @@ class VideoPlayerController extends ChangeNotifier {
       }),
 
       _player!.stream.position.listen((position) {
+        if (!_isSessionActive(sessionId)) return;
         if (_isDisposed || _isDisposing) return;
         if (_isSeeking) return;
         // 切换清晰度期间忽略 position=0 的跳变（open 重置导致）
@@ -618,8 +785,25 @@ class VideoPlayerController extends ChangeNotifier {
           _hasJustCompleted = false;
         }
 
+        // loop-file=inf 循环检测：position 从接近结尾跳回开头，触发 onVideoEnd
+        if (loopMode.value == LoopMode.on &&
+            !isSwitchingQuality.value &&
+            !_isSeeking &&
+            position.inSeconds <= 1 &&
+            _lastReportedPosition.inSeconds > 5) {
+          final dur = _player?.state.duration ?? Duration.zero;
+          if (dur.inSeconds > 0 &&
+              _lastReportedPosition.inMilliseconds / dur.inMilliseconds > 0.9) {
+            _logger.logDebug('loop-file 循环重播检测: 触发 onVideoEnd');
+            _notifyVideoEndOnce();
+          }
+        }
+
         // 调试：打印音视频 PTS 状态（每10秒一次）
-        if (position.inSeconds % 10 == 0 && position.inSeconds > 0) {
+        if (position.inSeconds % 10 == 0 &&
+            position.inSeconds > 0 &&
+            _lastPtsLoggedSecond != position.inSeconds) {
+          _lastPtsLoggedSecond = position.inSeconds;
           _logPtsState();
         }
 
@@ -630,27 +814,30 @@ class VideoPlayerController extends ChangeNotifier {
       }),
 
       _player!.stream.duration.listen((duration) {
+        if (!_isSessionActive(sessionId)) return;
         if (duration > Duration.zero) {
           _updateDurationSecond();
         }
       }),
 
       _player!.stream.buffer.listen((buffer) {
+        if (!_isSessionActive(sessionId)) return;
         _updateBufferedSecond();
       }),
 
       _player!.stream.buffering.listen((buffering) {
+        if (!_isSessionActive(sessionId)) return;
         if (buffering) {
           _bufferingShowTimer?.cancel();
           _bufferingShowTimer = Timer(const Duration(milliseconds: _bufferingSustainMs), () {
             _bufferingShowTimer = null;
-            if (_player != null && _player!.state.buffering) {
+            if (_isSessionActive(sessionId) && _player!.state.buffering) {
               isBuffering.value = true;
             }
           });
           _stalledTimer?.cancel();
           _stalledTimer = Timer(const Duration(seconds: 15), () {
-            if (_player != null && _player!.state.buffering) {
+            if (_isSessionActive(sessionId) && _player!.state.buffering) {
               _handleStalled();
             }
           });
@@ -665,6 +852,7 @@ class VideoPlayerController extends ChangeNotifier {
       // 网络错误监听（PiliPlus 方式）：通过 error stream 检测断网/加载失败，
       // 双重确认（isBuffering + buffer==0）后重试，避免误判。
       _player!.stream.error.listen((error) {
+        if (!_isSessionActive(sessionId)) return;
         if (error.isEmpty) return;
         _logger.logDebug('播放错误: $error');
 
@@ -674,7 +862,7 @@ class VideoPlayerController extends ChangeNotifier {
             error.startsWith('Can not open external file ')) {
           // 延迟 3 秒后双重确认：仍在 buffering 且缓冲为空才重试
           Future.delayed(const Duration(seconds: 3), () {
-            if (_isDisposed || _player == null) return;
+            if (!_isSessionActive(sessionId)) return;
             if (_player!.state.buffering && _player!.state.buffer == Duration.zero) {
               _logger.logDebug('网络错误确认: buffering 且缓冲为空, 重试');
               _handleStalled();
@@ -685,6 +873,7 @@ class VideoPlayerController extends ChangeNotifier {
 
       // mpv 日志抓取：捕获 AV sync、音频、时间戳相关日志
       _player!.stream.log.listen((log) {
+        if (!_isSessionActive(sessionId)) return;
         if (log.prefix == 'av_sync' ||
             log.prefix == 'audio' ||
             log.prefix == 'cplayer' ||
@@ -719,6 +908,7 @@ class VideoPlayerController extends ChangeNotifier {
       s.cancel();
     }
     _subscriptions = [];
+    _listenersStarted = false;
     _stalledTimer?.cancel();
     _stalledTimer = null;
     _seekTimer?.cancel();
@@ -729,25 +919,33 @@ class VideoPlayerController extends ChangeNotifier {
 
   /// 处理卡顿恢复（参考 pili_plus 的 refreshPlayer，复用 setDataSource）
   Future<void> _handleStalled() async {
-    if (_isHandlingStall) return;
-    if (_isInitializing || isLoading.value) return;
-    if (isSwitchingQuality.value) return;
-    if (_currentResourceId == null || currentQuality.value == null) return;
-    if (_player == null) return;
+    await _enqueueOperation(() async {
+      if (_isHandlingStall) return;
+      if (_isInitializing || isLoading.value) return;
+      if (isSwitchingQuality.value) return;
+      if (_isSeeking || _seekInFlight) return;
+      final lastSeekAt = _lastSeekAt;
+      if (lastSeekAt != null &&
+          DateTime.now().difference(lastSeekAt).inSeconds < 4) {
+        return;
+      }
+      if (_currentResourceId == null || currentQuality.value == null) return;
+      if (_player == null) return;
 
-    _isHandlingStall = true;
-    try {
-      final currentPos = _player!.state.position;
-      if (currentPos <= Duration.zero) return;
+      _isHandlingStall = true;
+      try {
+        final currentPos = _player!.state.position;
+        if (currentPos <= Duration.zero) return;
 
-      _logger.logDebug('_handleStalled: refreshPlayer from ${currentPos.inSeconds}s');
-      await _reloadWithDataSource(currentQuality.value!, currentPos);
-      _userIntendedPosition = currentPos;
-    } catch (e) {
-      _logger.logDebug('_handleStalled 失败: $e');
-    } finally {
-      _isHandlingStall = false;
-    }
+        _logger.logDebug('_handleStalled: refreshPlayer from ${currentPos.inSeconds}s');
+        await _reloadWithDataSource(currentQuality.value!, currentPos);
+        _userIntendedPosition = currentPos;
+      } catch (e) {
+        _logger.logDebug('_handleStalled 失败: $e');
+      } finally {
+        _isHandlingStall = false;
+      }
+    });
   }
 
   // ============ 辅助方法 ============
@@ -774,7 +972,7 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _configurePlayerOnce(String decodeMode) async {
     if (_player == null) return;
 
-    // 提升 seek 精度
+    // 双独立流（video+audio 分离）需精确 seek 保证音画同步，hr-seek=yes
     _player!.setProperty('hr-seek', 'yes');
 
     // 禁用帧插值
@@ -856,6 +1054,41 @@ class VideoPlayerController extends ChangeNotifier {
     await prefs.setString(_decodeModeKey, mode);
   }
 
+  /// 扩展缓冲：true=32MB，false=16MB（弱网可关闭以节省内存）
+  static Future<bool> getExpandBuffer() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_expandBufferKey) ?? true;
+  }
+
+  static Future<void> setExpandBuffer(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_expandBufferKey, value);
+  }
+
+  /// 音频输出后端（仅 Android）：audiotrack/aaudio/opensles
+  static Future<String> getAudioOutput() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_audioOutputKey) ?? 'audiotrack';
+  }
+
+  static Future<void> setAudioOutput(String value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_audioOutputKey, value);
+  }
+
+  static String getAudioOutputDisplayName(String value) {
+    switch (value) {
+      case 'audiotrack':
+        return 'AudioTrack';
+      case 'aaudio':
+        return 'AAudio';
+      case 'opensles':
+        return 'OpenSL ES';
+      default:
+        return value;
+    }
+  }
+
   static String getDecodeModeDisplayName(String mode) {
     switch (mode) {
       case 'no':
@@ -887,13 +1120,15 @@ class VideoPlayerController extends ChangeNotifier {
 
   /// 同步 mpv 的 loop-file 属性
   ///
-  /// 始终设为 no：不依赖 mpv 的 loop-file=inf，因为对于 HLS/DASH 流媒体，
-  /// mpv 自动循环会重新请求所有分片（重新 open URL），浪费流量。
-  /// 循环逻辑改为在 completed 事件中手动 seek(0) + play()，复用已缓存的资源。
+  /// 直链 fMP4 模式下 loop-file=inf 由 mpv 内部处理循环，
+  /// demuxer 缓存 100% 复用，循环时零额外网络请求。
   Future<void> _syncLoopProperty() async {
     if (_player == null) return;
     try {
-      _player!.setProperty('loop-file', 'no');
+      _player!.setProperty(
+        'loop-file',
+        loopMode.value == LoopMode.on ? 'inf' : 'no',
+      );
     } catch (_) {}
   }
 
@@ -923,26 +1158,20 @@ class VideoPlayerController extends ChangeNotifier {
     }
   }
 
-  /// 播放（参考 pili_plus）
-  ///
-  /// [repeat] 循环模式时传 true，会先 seek 到开头
-  Future<void> play({bool repeat = false}) async {
+  Future<void> play() async {
     if (_isDisposed || _player == null) return;
-    if (repeat) {
-      await _player!.seek(Duration.zero);
+    if (_audioSession != null) {
+      await _audioSession!.setActive(true);
     }
     await _player!.play();
-    _audioSession?.setActive(true);
   }
 
-  /// 暂停（参考 pili_plus）
-  ///
-  /// [isInterrupt] 系统中断（电话等）时传 true，不释放音频焦点
+  /// [isInterrupt] 系统中断时传 true，不释放音频焦点
   Future<void> pause({bool isInterrupt = false}) async {
     if (_isDisposed || _player == null) return;
     await _player!.pause();
-    if (!isInterrupt) {
-      _audioSession?.setActive(false);
+    if (!isInterrupt && _audioSession != null) {
+      await _audioSession!.setActive(false);
     }
   }
 
@@ -997,12 +1226,19 @@ class VideoPlayerController extends ChangeNotifier {
           _logger.logDebug('[AudioSession] duck 结束，音量恢复');
           break;
         case AudioInterruptionType.pause:
-        case AudioInterruptionType.unknown:
           if (_wasPlayingBeforeInterruption) {
             _wasPlayingBeforeInterruption = false;
-            play();
-            _logger.logDebug('[AudioSession] 中断结束，恢复播放');
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (_player == null || _isDisposed) return;
+              if (!_player!.state.playing) {
+                play();
+                _logger.logDebug('[AudioSession] 中断结束，恢复播放', tag: 'AudioSession');
+              }
+            });
           }
+          break;
+        case AudioInterruptionType.unknown:
+          _wasPlayingBeforeInterruption = false;
           break;
       }
     }
@@ -1058,8 +1294,8 @@ class VideoPlayerController extends ChangeNotifier {
     await _connectivitySubscription?.cancel();
 
     // 停止 AudioService 通知栏（先 stop 再 detach，确保状态转换正确）
-    await audioHandler.stop();
-    audioHandler.detachPlayer();
+    await audioHandler.stopIfOwner(_audioOwnerId);
+    audioHandler.detachPlayerIfOwner(_audioOwnerId);
 
     _manifest = null;
 

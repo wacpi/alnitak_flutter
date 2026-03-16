@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'pages/main_page.dart';
 import 'pages/settings_page.dart';
 import 'theme/app_theme.dart';
@@ -37,6 +39,20 @@ void main() {
 
 Future<void> _init() async {
   MediaKit.ensureInitialized();
+  // 提前初始化 AudioSession（对齐 pili_plus），减少音频设备占用后恢复时的音画不同步
+  if (Platform.isAndroid || Platform.isIOS) {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+      if (kDebugMode) {
+        LoggerService.instance.logDebug('AudioSession 已预初始化', tag: 'App');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        LoggerService.instance.logWarning('AudioSession 预初始化失败: $e', tag: 'App');
+      }
+    }
+  }
   audioHandler = await AudioService.init(
     builder: () => VideoAudioHandler(),
     config: const AudioServiceConfig(
