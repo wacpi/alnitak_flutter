@@ -4,6 +4,12 @@
 
 本文档记录了 Alnitak Flutter 应用的用户认证系统实现，包括注册、登录、用户信息管理等完整功能。
 
+## 与 Web（Nuxt）阶段 B / 后端双栈对齐
+
+- **移动端不走浏览器 HttpOnly Cookie**：Flutter 使用 **JSON 响应中的 `token` / `refreshToken`**，通过 Dio 在请求头携带 `Authorization`，与当前后端 **双栈** 契约兼容（PC 侧重 Cookie + SSR，App 侧重 Bearer + body）。
+- **`POST /api/v1/auth/updateToken`**：服务端可能在轮换会话时返回 **新的** `refreshToken`；客户端必须在刷新成功后 **持久化新 refresh**（见下文「Refresh 轮换」与 `TokenManager.updateToken`），否则下一轮刷新会失败。
+- **`POST /api/v1/auth/logout`**：后端为 **公开路由**，仅凭 body 中的 `refreshToken` 即可吊销会话；**access 已过期时无需也不应强依赖 `Authorization`**，仅发 refresh 即可。
+
 ## 文件结构
 
 ```
@@ -14,6 +20,9 @@ lib/
 ├── services/
 │   ├── auth_service.dart        # 认证服务
 │   └── user_service.dart        # 用户服务
+├── utils/
+│   ├── http_client.dart         # Dio + 刷新拦截器（含 refresh 轮换持久化）
+│   └── token_manager.dart       # Token 持久化与 updateToken(refreshToken:)
 └── pages/
     ├── login_page.dart          # 登录页面
     ├── register_page.dart       # 注册页面
@@ -165,15 +174,16 @@ Future<LoginResponse?> loginWithEmail({
 Future<String?> updateToken()
 ```
 - 接口: `POST /api/v1/auth/updateToken`
-- 功能: 使用 refreshToken 获取新的 token
-- 返回: 新的 token，失败返回 null
+- 功能: 使用本地 `refreshToken` 获取新的 access；若响应 `data` 中含 **`refreshToken`（服务端轮换）**，会一并写入 `TokenManager`
+- 返回: 新的 access token，失败返回 null
 
 **退出登录**
 ```dart
 Future<bool> logout()
 ```
 - 接口: `POST /api/v1/auth/logout`
-- 功能: 失效 refreshToken 并清除本地存储
+- 功能: 使用 `refreshToken` 通知服务端吊销会话，并清除本地存储
+- 说明: 无 `refreshToken` 时仅清本地；**仅有 refresh、access 已空** 时请求 **不携带** `Authorization`；有 access 时仍可附带，与后端公开 logout 语义一致
 
 **修改密码**
 ```dart
@@ -186,22 +196,25 @@ Future<bool> modifyPassword({
 })
 ```
 
-#### Token 管理
+#### Token 管理（[token_manager.dart](lib/utils/token_manager.dart)）
 
 **存储机制**
-- 使用 `shared_preferences` 存储 token 和 refreshToken
-- Token 有效期: 1小时
-- RefreshToken 有效期: 7天
+- 使用 `shared_preferences` 对 access / refresh 做混淆持久化
+- Access 有效期约 1 小时；Refresh 约 7 天（以后端策略为准）
 
-**核心方法**
+**核心方法（摘要）**
 ```dart
-Future<void> saveToken(String token)
-Future<void> saveRefreshToken(String refreshToken)
-Future<String?> getToken()
-Future<String?> getRefreshToken()
+Future<void> saveTokens({required String token, required String refreshToken})
+/// 刷新后更新 access；[refreshToken] 非空时写入新 refresh（与服务端轮换对齐）
+Future<void> updateToken(String token, {String? refreshToken})
 Future<void> clearTokens()
-Future<bool> isLoggedIn()
+String? get token
+String? get refreshToken
+bool get isLoggedIn
 ```
+
+**Refresh 轮换**
+- [http_client.dart](lib/utils/http_client.dart) 中 `HttpClient.refreshToken()` 与 `AuthInterceptor` 触发刷新时，若 `data['refreshToken']` 存在，会调用 `updateToken(..., refreshToken: newRefresh)`，避免只更新 access 导致旧 refresh 失效后无法续期。
 
 ### 2. 用户服务 ([user_service.dart](lib/services/user_service.dart))
 
@@ -602,6 +615,8 @@ Response:
 ```
 
 #### 更新 Token
+说明: 响应 `data.refreshToken` 在服务端轮换时出现新值，须持久化；未轮换时字段可省略或与旧值相同。
+
 ```http
 POST /api/v1/auth/updateToken
 Content-Type: application/json
@@ -609,17 +624,24 @@ Content-Type: application/json
 {
   "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 }
+```
 
-Response (成功):
+成功响应示例：
+
+```json
 {
   "code": 200,
   "data": {
-    "token": "new-token-here"
+    "token": "new-access-token-here",
+    "refreshToken": "new-refresh-when-rotated-or-omit"
   },
   "msg": "ok"
 }
+```
 
-Response (失效):
+失效响应示例：
+
+```json
 {
   "code": 2000,
   "msg": "token失效错误"
@@ -627,16 +649,20 @@ Response (失效):
 ```
 
 #### 退出登录
+- `Authorization` **可选**：access 仍有效时可附带；仅有 refresh、access 已过期时只发 body 即可。
+
 ```http
 POST /api/v1/auth/logout
-Authorization: Bearer {token}
 Content-Type: application/json
 
 {
   "refreshToken": "..."
 }
+```
 
-Response:
+响应示例：
+
+```json
 {
   "code": 200,
   "data": null,
@@ -739,8 +765,11 @@ Response:
 - 退出登录时立即清除
 
 **自动刷新机制**
+- `HttpClient` 的 `AuthInterceptor` 在收到 `code == 3000`（access 过期）时会调用 `refreshToken()`，成功后若响应含新 **refresh** 会一并写入 `TokenManager`（与后端轮换策略一致）。
+- 业务侧亦可调用 `AuthService.updateToken()`，行为相同。
+
 ```dart
-// 在 _loadUserData 中自动处理 token 过期
+// 在 _loadUserData 等场景中处理 access 过期后的手动刷新
 if (userInfo == null) {
   final newToken = await _authService.updateToken();
   if (newToken != null) {

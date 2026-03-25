@@ -156,9 +156,13 @@ class TokenManager extends ChangeNotifier {
   }
 
   /// 更新 Token（刷新后调用）
-  Future<void> updateToken(String token) async {
+  /// [refreshToken] 若服务端轮换 refresh（与 Web 阶段 B 一致），须一并持久化，否则后续刷新会失败
+  Future<void> updateToken(String token, {String? refreshToken}) async {
     try {
       _cachedToken = token;
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        _cachedRefreshToken = refreshToken;
+      }
 
       final prefs = await SharedPreferences.getInstance();
       await _saveToStorage(prefs);

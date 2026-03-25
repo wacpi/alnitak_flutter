@@ -128,8 +128,13 @@ class AuthService {
       );
 
       if (response.data['code'] == 200) {
-        final newToken = response.data['data']['token'] as String;
-        await _tokenManager.updateToken(newToken);
+        final data = response.data['data'] as Map<String, dynamic>;
+        final newToken = data['token'] as String;
+        final newRefresh = data['refreshToken'] as String?;
+        await _tokenManager.updateToken(
+          newToken,
+          refreshToken: newRefresh,
+        );
         return newToken;
       } else if (response.data['code'] == 2000) {
         // Token 失效，触发自动退出
@@ -144,22 +149,24 @@ class AuthService {
   }
 
   /// 退出登录
+  /// access 已过期时仅携带 refresh 通知服务端吊销（与后端公开 logout 语义一致）
   Future<bool> logout() async {
     try {
       final token = _tokenManager.token;
       final refreshToken = _tokenManager.refreshToken;
 
-      if (token == null || refreshToken == null) {
+      if (refreshToken == null || refreshToken.isEmpty) {
         await _tokenManager.clearTokens();
         return true;
       }
 
+      final hasAccess = token != null && token.isNotEmpty;
       final response = await _httpClient.dio.post(
         '/api/v1/auth/logout',
         data: {'refreshToken': refreshToken},
-        options: Options(
-          headers: {'Authorization': token},
-        ),
+        options: hasAccess
+            ? Options(headers: {'Authorization': token})
+            : Options(),
       );
 
       await _tokenManager.clearTokens();

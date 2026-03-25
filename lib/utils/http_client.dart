@@ -108,8 +108,13 @@ class HttpClient {
       );
 
       if (response.data['code'] == 200) {
-        final newToken = response.data['data']['token'] as String;
-        await tokenManager.updateToken(newToken);
+        final data = response.data['data'] as Map<String, dynamic>;
+        final newToken = data['token'] as String;
+        final newRefresh = data['refreshToken'] as String?;
+        await tokenManager.updateToken(
+          newToken,
+          refreshToken: newRefresh,
+        );
         completer.complete(newToken);
         return newToken;
       } else if (response.data['code'] == 2000) {
