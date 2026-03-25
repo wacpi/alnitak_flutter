@@ -13,6 +13,25 @@ class SendCodeCaptchaRequiredException implements Exception {
   String toString() => '需要人机验证';
 }
 
+/// 发送验证码冷却中异常
+class SendCodeCooldownException implements Exception {
+  final int countdown;
+  final String message;
+
+  SendCodeCooldownException(this.countdown, this.message);
+
+  @override
+  String toString() => message;
+}
+
+/// 发送验证码成功结果
+class SendCodeResult {
+  final int countdown;
+  final String message;
+
+  SendCodeResult({required this.countdown, required this.message});
+}
+
 /// 人机验证服务
 class CaptchaService {
   static final CaptchaService _instance = CaptchaService._internal();
@@ -81,7 +100,9 @@ class CaptchaService {
   /// 发送邮箱验证码
   /// [captchaId] 可选，首次调用可不传，如果服务端要求验证会抛出异常
   /// 抛出 [SendCodeCaptchaRequiredException] 表示需要人机验证
-  Future<bool> sendEmailCode({
+  /// 抛出 [SendCodeCooldownException] 表示发送过于频繁，附带剩余冷却秒数
+  /// 成功返回 [SendCodeResult] 包含冷却时间和提示消息
+  Future<SendCodeResult> sendEmailCode({
     required String email,
     String? captchaId,
   }) async {
@@ -97,21 +118,31 @@ class CaptchaService {
       );
 
       if (response.data['code'] == 200) {
-        return true;
+        final countdown = response.data['data']?['countdown'] as int? ?? 60;
+        final msg = response.data['msg'] as String? ?? '验证码已发送，请查收邮箱';
+        return SendCodeResult(countdown: countdown, message: msg);
       } else if (response.data['code'] == -1) {
         // 需要人机验证，服务端返回 captchaId
         final serverCaptchaId = response.data['data']?['captchaId'] as String? ?? '';
         if (serverCaptchaId.isNotEmpty) {
           throw SendCodeCaptchaRequiredException(serverCaptchaId);
         }
+      } else if (response.data['code'] == 500) {
+        // 发送失败，检查是否有冷却时间
+        final countdown = response.data['data']?['countdown'] as int?;
+        final msg = response.data['msg'] as String? ?? '验证码发送失败';
+        if (countdown != null && countdown > 0) {
+          throw SendCodeCooldownException(countdown, msg);
+        }
+        throw Exception(msg);
       }
-      return false;
+      throw Exception('验证码发送失败');
     } catch (e) {
-      if (e is SendCodeCaptchaRequiredException) {
+      if (e is SendCodeCaptchaRequiredException || e is SendCodeCooldownException) {
         rethrow;
       }
       LoggerService.instance.logWarning('发送邮箱验证码失败: $e', tag: 'CaptchaService');
-      return false;
+      rethrow;
     }
   }
 }

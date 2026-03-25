@@ -192,20 +192,17 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
 
     try {
       // 发送验证码（首次不带 captchaId，服务端决定是否需要验证）
-      final success = await _captchaService.sendEmailCode(
+      final result = await _captchaService.sendEmailCode(
         email: email,
         captchaId: _emailCodeCaptchaId,
       );
 
-      if (success) {
-        _showMessage('验证码已发送，请查收邮箱');
-        setState(() => _countdown = 60);
-        _startCountdown();
-        // 成功后清除 captchaId
-        _emailCodeCaptchaId = null;
-      } else {
-        _showMessage('验证码发送失败，请重试');
-      }
+      _showMessage(result.message);
+      // 使用后端返回的冷却时间开始倒计时
+      setState(() => _countdown = result.countdown);
+      _startCountdown();
+      // 成功后清除 captchaId
+      _emailCodeCaptchaId = null;
     } on SendCodeCaptchaRequiredException catch (e) {
       // 需要人机验证，使用服务端返回的 captchaId
       if (mounted) {
@@ -217,6 +214,11 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         }
       }
       return;
+    } on SendCodeCooldownException catch (e) {
+      // 发送过于频繁，使用后端返回的剩余冷却时间
+      _showMessage(e.message);
+      setState(() => _countdown = e.countdown);
+      _startCountdown();
     } catch (e) {
       _showMessage(ErrorHandler.getErrorMessage(e));
     } finally {
