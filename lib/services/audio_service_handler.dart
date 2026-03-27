@@ -7,6 +7,10 @@ import 'logger_service.dart';
 ///
 /// 通知栏 play/pause/seek 通过 onPlay/onPause/onSeek 委托给 Controller，
 /// 由 Controller 统一管理 AudioSession.setActive，不在此处直接操作 Player。
+///
+/// 关键设计（对齐 pili_plus）：
+/// - position 更新只改 updatePosition，不触碰 controls/playing（避免高频重建覆盖状态）
+/// - playing 状态变化才更新 controls（play↔pause 按钮切换）
 class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
   final LoggerService _logger = LoggerService.instance;
   Player? _player;
@@ -70,15 +74,21 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   /// 监听播放器状态变化，自动同步到 AudioService
+  ///
+  /// 对齐 pili_plus 分离策略：
+  /// - playing stream → 更新 controls + playing 状态
+  /// - position stream → 只更新 position（不触碰 controls/playing）
+  /// - buffer stream → 只更新 bufferedPosition
+  /// - duration stream → 更新 mediaItem.duration
   void _setupPlayerListeners() {
     if (_player == null) return;
 
     _playingSubscription = _player!.stream.playing.listen((playing) {
-      _updatePlaybackState(playing: playing);
+      _updatePlayingState(playing);
     });
 
     _positionSubscription = _player!.stream.position.listen((position) {
-      _updatePlaybackState(position: position);
+      _updatePosition(position);
     });
 
     _durationSubscription = _player!.stream.duration.listen((duration) {
@@ -88,7 +98,9 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
     });
 
     _bufferSubscription = _player!.stream.buffer.listen((buffer) {
-      _updatePlaybackState(bufferedPosition: buffer);
+      playbackState.add(playbackState.value.copyWith(
+        bufferedPosition: buffer,
+      ));
     });
   }
 
@@ -110,28 +122,17 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
     _logger.logDebug('[AudioService] 设置媒体信息: $title', tag: 'AudioService');
   }
 
-  /// 内部更新播放状态
-  void _updatePlaybackState({
-    bool? playing,
-    Duration? position,
-    Duration? bufferedPosition,
-  }) {
+  /// 更新播放/暂停状态 + controls（仅 playing stream 触发）
+  void _updatePlayingState(bool playing) {
     if (_player == null) return;
-    final currentPlaying = playing ?? _player!.state.playing;
-    final currentPosition = position ?? _player!.state.position;
-    final currentBuffered = bufferedPosition ?? _player!.state.buffer;
-
     playbackState.add(playbackState.value.copyWith(
-      playing: currentPlaying,
+      playing: playing,
       controls: [
         MediaControl.rewind,
-        currentPlaying ? MediaControl.pause : MediaControl.play,
+        playing ? MediaControl.pause : MediaControl.play,
         MediaControl.fastForward,
       ],
       androidCompactActionIndices: const [0, 1, 2],
-      updatePosition: currentPosition,
-      bufferedPosition: currentBuffered,
-      speed: 1.0,
       processingState: AudioProcessingState.ready,
       systemActions: const {
         MediaAction.seek,
@@ -140,6 +141,14 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
         MediaAction.fastForward,
         MediaAction.rewind,
       },
+    ));
+  }
+
+  /// 更新播放位置（仅 position stream 触发，不改 controls/playing）
+  void _updatePosition(Duration position) {
+    if (_player == null) return;
+    playbackState.add(playbackState.value.copyWith(
+      updatePosition: position,
     ));
   }
 
@@ -190,7 +199,11 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> seek(Duration position) async => _seekTo(position);
+  Future<void> seek(Duration position) async {
+    // 对齐 pili_plus：先更新 position state，再执行实际 seek（通知栏进度条立即响应）
+    _updatePosition(position);
+    await _seekTo(position);
+  }
 
   @override
   Future<void> fastForward() async {
