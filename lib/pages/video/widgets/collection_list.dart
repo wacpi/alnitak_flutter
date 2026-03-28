@@ -122,7 +122,7 @@ class CollectionListState extends State<CollectionList> {
             vid: vid,
             title: '',
             cover: '',
-            duration: (r['duration'] ?? 0).toDouble(),
+            duration: _parseDuration(r),
             clicks: 0,
             desc: '',
             resourceId: r['resourceId'] ?? r['ID'],
@@ -156,6 +156,14 @@ class CollectionListState extends State<CollectionList> {
         });
       }
     }
+  }
+
+  /// 兼容后端历史字段：duration / Duration，支持 num / string
+  double _parseDuration(Map<String, dynamic> item) {
+    final dynamic raw = item['duration'] ?? item['Duration'] ?? 0;
+    if (raw is num) return raw.toDouble();
+    if (raw is String) return double.tryParse(raw) ?? 0;
+    return 0;
   }
 
   /// 获取下一个分P（仅分P类型有效）
