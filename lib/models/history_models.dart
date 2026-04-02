@@ -65,6 +65,13 @@ class HistoryItem {
   final int duration;    // ✅ 视频总时长(秒)
   final String updatedAt;
 
+  /// 服务端：绑定 PGC 剧集的视频；与 [epId] 配合用于 `pgc:<vid>:<epId>` 播放入口
+  final bool pgcAttached;
+  final String? pgcTitle;
+  final String? episodeTitle;
+  final int episodeNumber;
+  final int epId;
+
   HistoryItem({
     required this.vid,
     this.shortId,
@@ -75,6 +82,11 @@ class HistoryItem {
     required this.time,
     required this.duration,
     required this.updatedAt,
+    this.pgcAttached = false,
+    this.pgcTitle,
+    this.episodeTitle,
+    this.episodeNumber = 0,
+    this.epId = 0,
   });
 
   factory HistoryItem.fromJson(Map<String, dynamic> json) {
@@ -86,9 +98,13 @@ class HistoryItem {
       cover: json['cover'] as String,
       desc: json['desc'] as String,
       time: (json['time'] as num).toDouble(),
-        // ✅ 核心修复点：num → int
       duration: (json['duration'] as num?)?.toInt() ?? 0,
       updatedAt: json['updatedAt'] as String,
+      pgcAttached: json['pgcAttached'] as bool? ?? false,
+      pgcTitle: json['pgcTitle'] as String?,
+      episodeTitle: json['episodeTitle'] as String?,
+      episodeNumber: (json['episodeNumber'] as num?)?.toInt() ?? 0,
+      epId: (json['epId'] as num?)?.toInt() ?? 0,
     );
   }
 }

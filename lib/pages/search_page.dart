@@ -6,7 +6,10 @@ import '../services/video_api_service.dart';
 import '../services/article_api_service.dart';
 import '../services/user_service.dart';
 import '../services/logger_service.dart';
+import '../services/pgc_api_service.dart';
+import '../models/pgc_models.dart';
 import '../widgets/video_card.dart';
+import '../widgets/pgc_card.dart';
 import '../theme/theme_extensions.dart';
 import '../utils/image_utils.dart';
 import 'video/video_play_page.dart';
@@ -31,6 +34,7 @@ class _SearchPageState extends State<SearchPage>
   final ScrollController _videoScroll = ScrollController();
   final ScrollController _articleScroll = ScrollController();
   final ScrollController _userScroll = ScrollController();
+  final ScrollController _pgcScroll = ScrollController();
 
   final UserService _userService = UserService();
 
@@ -47,6 +51,12 @@ class _SearchPageState extends State<SearchPage>
   bool _articleHasMore = true;
 
   List<UserBaseInfo> _users = [];
+  // ============ 影视（PGC） ============
+  List<PgcItem> _pgcList = [];
+  int _pgcPage = 1;
+  bool _pgcLoading = false;
+  bool _pgcHasMore = true;
+
   int _userPage = 1;
   bool _userLoading = false;
   bool _userHasMore = true;
@@ -60,11 +70,12 @@ class _SearchPageState extends State<SearchPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(_onTabChanged);
     _videoScroll.addListener(() => _onScroll(0));
     _articleScroll.addListener(() => _onScroll(1));
     _userScroll.addListener(() => _onScroll(2));
+    _pgcScroll.addListener(() => _onScroll(3));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _searchFocusNode.requestFocus();
     });
@@ -82,7 +93,9 @@ class _SearchPageState extends State<SearchPage>
         ? _videoScroll
         : tabIndex == 1
             ? _articleScroll
-            : _userScroll;
+            : tabIndex == 2
+                ? _userScroll
+                : _pgcScroll;
     if (!c.hasClients) return;
     if (c.position.pixels < c.position.maxScrollExtent * 0.85) return;
     _loadMoreForTab(tabIndex);
@@ -95,6 +108,8 @@ class _SearchPageState extends State<SearchPage>
       await _loadArticles(reset: true);
     } else if (index == 2 && _users.isEmpty && !_userLoading) {
       await _loadUsers(reset: true);
+    } else if (index == 3 && _pgcList.isEmpty && !_pgcLoading) {
+      await _loadPgc(reset: true);
     }
   }
 
@@ -105,9 +120,12 @@ class _SearchPageState extends State<SearchPage>
     } else if (index == 1) {
       if (!_articleHasMore || _articleLoading) return;
       await _loadArticles(reset: false);
-    } else {
+    } else if (index == 2) {
       if (!_userHasMore || _userLoading) return;
       await _loadUsers(reset: false);
+    } else {
+      if (!_pgcHasMore || _pgcLoading) return;
+      await _loadPgc(reset: false);
     }
   }
 
@@ -120,6 +138,7 @@ class _SearchPageState extends State<SearchPage>
     _videoScroll.dispose();
     _articleScroll.dispose();
     _userScroll.dispose();
+    _pgcScroll.dispose();
     super.dispose();
   }
 
@@ -146,6 +165,10 @@ class _SearchPageState extends State<SearchPage>
       _users = [];
       _userPage = 1;
       _userHasMore = true;
+
+      _pgcList = [];
+      _pgcPage = 1;
+      _pgcHasMore = true;
     });
 
     await _loadCurrentTab(reset: true);
@@ -314,6 +337,46 @@ class _SearchPageState extends State<SearchPage>
     if (i == 0) await _loadVideos(reset: reset);
     if (i == 1) await _loadArticles(reset: reset);
     if (i == 2) await _loadUsers(reset: reset);
+    if (i == 3) await _loadPgc(reset: reset);
+  }
+
+  Future<void> _loadPgc({required bool reset}) async {
+    if (_pgcLoading) return;
+    setState(() => _pgcLoading = true);
+    if (reset) {
+      _pgcPage = 1;
+      _pgcList = [];
+      _pgcHasMore = true;
+    }
+    try {
+      final list = await PgcApiService.search(
+        keyword: _keywords,
+        page: _pgcPage,
+        pageSize: 20,
+      );
+      if (!mounted) return;
+      setState(() {
+        _pgcList.addAll(list);
+        if (list.length < 20) {
+          _pgcHasMore = false;
+        } else {
+          _pgcPage++;
+        }
+        _pgcLoading = false;
+      });
+    } catch (e, st) {
+      await LoggerService.instance.logDataLoadError(
+        dataType: '搜索影视',
+        operation: '搜索',
+        error: e,
+        stackTrace: st,
+        context: {'关键词': _keywords},
+      );
+      if (!mounted) return;
+      setState(() {
+        _pgcLoading = false;
+      });
+    }
   }
 
   Future<void> _loadVideos({required bool reset}) async {
@@ -523,6 +586,7 @@ class _SearchPageState extends State<SearchPage>
             Tab(text: '视频'),
             Tab(text: '专栏'),
             Tab(text: 'UP主'),
+            Tab(text: '影视'),
           ],
         ),
       ),
@@ -619,9 +683,77 @@ class _SearchPageState extends State<SearchPage>
               _buildVideoTab(colors),
               _buildArticleTab(colors),
               _buildUserTab(colors),
+              _buildPgcTab(colors),
             ],
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _buildPgcTab(dynamic colors) {
+    if (_pgcList.isEmpty && _pgcLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_pgcList.isEmpty) {
+      return Center(
+        child: Text('暂无相关影视', style: TextStyle(color: colors.textSecondary)),
+      );
+    }
+    return CustomScrollView(
+      controller: _pgcScroll,
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.all(8),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 1.05,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                final item = _pgcList[index];
+                return PgcCard(
+                  item: item,
+                  onTap: () async {
+                    final epId = item.latestEpId;
+                    if (epId == null || epId <= 0) return;
+                    final vid = await PgcApiService.resolveVidByEpisodeId(epId);
+                    if (vid == null || vid <= 0) return;
+                    if (!context.mounted) return;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => VideoPlayPage(
+                          videoRef: 'pgc:$vid:$epId',
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+              childCount: _pgcList.length,
+            ),
+          ),
+        ),
+        if (_pgcLoading && _pgcList.isNotEmpty)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ),
+        if (!_pgcHasMore && _pgcList.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text('没有更多了', style: TextStyle(color: colors.textTertiary)),
+              ),
+            ),
+          ),
       ],
     );
   }

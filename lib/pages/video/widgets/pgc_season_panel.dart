@@ -20,6 +20,7 @@ class PgcSeasonPanel extends StatefulWidget {
 
 class PgcSeasonPanelState extends State<PgcSeasonPanel> {
   bool _autoNext = true;
+  bool _showTitleMode = true;
   bool _loading = true;
   PgcPlayPanel? _panel;
   int _currentPlayIndex = -1;
@@ -45,12 +46,14 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
     if (!mounted) return;
     setState(() {
       _autoNext = prefs.getBool('video_pgc_auto_next') ?? true;
+      _showTitleMode = prefs.getBool('video_pgc_show_title') ?? true;
     });
   }
 
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('video_pgc_auto_next', _autoNext);
+    await prefs.setBool('video_pgc_show_title', _showTitleMode);
   }
 
   Future<void> _loadPanel({String? seasonId}) async {
@@ -77,6 +80,11 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
     _saveSettings();
   }
 
+  void _toggleViewMode() {
+    setState(() => _showTitleMode = !_showTitleMode);
+    _saveSettings();
+  }
+
   int? getNextVideo() {
     if (!_autoNext) return null;
     final eps = _panel?.episodes ?? const <PgcEpisode>[];
@@ -87,6 +95,119 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
       return eps[nextIndex].vid;
     }
     return null;
+  }
+
+  bool _isCurrentEp(int index) {
+    final eps = _panel?.episodes ?? const <PgcEpisode>[];
+    if (index < 0 || index >= eps.length) return false;
+    return eps[index].vid == widget.vid;
+  }
+
+  String _epTitle(PgcEpisode ep, int index) {
+    if (ep.title.trim().isNotEmpty) return ep.title.trim();
+    if (ep.episodeNumber > 0) return '第${ep.episodeNumber}话';
+    return 'EP${index + 1}';
+  }
+
+  Widget _buildListMode(List<PgcEpisode> eps, dynamic colors) {
+    return Column(
+      children: [
+        for (int index = 0; index < eps.length; index++) ...[
+          if (index > 0) Divider(height: 1, color: colors.divider),
+          _buildListTile(index, eps[index], colors),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildListTile(int index, PgcEpisode ep, dynamic colors) {
+    final isCurrent = _isCurrentEp(index);
+    return ListTile(
+      selected: isCurrent,
+      selectedTileColor: colors.accentColor.withValues(alpha: 0.15),
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: isCurrent ? colors.accentColor : colors.surfaceVariant,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Text(
+            '${index + 1}',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: isCurrent ? Colors.white : colors.textSecondary,
+            ),
+          ),
+        ),
+      ),
+      title: Text(
+        _epTitle(ep, index),
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+          color: isCurrent ? colors.accentColor : colors.textPrimary,
+        ),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        ep.episodeNumber > 0 ? '第${ep.episodeNumber}话' : 'EP',
+        style: TextStyle(fontSize: 12, color: colors.textSecondary),
+      ),
+      trailing: isCurrent ? Icon(Icons.play_circle, color: colors.accentColor) : null,
+      onTap: () {
+        if (!isCurrent) {
+          _currentPlayIndex = index;
+          widget.onEpisodeTap(ep.vid);
+        }
+      },
+    );
+  }
+
+  Widget _buildGridMode(List<PgcEpisode> eps, dynamic colors) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (int index = 0; index < eps.length; index++)
+          _buildGridItem(index, eps[index], colors),
+      ],
+    );
+  }
+
+  Widget _buildGridItem(int index, PgcEpisode ep, dynamic colors) {
+    final isCurrent = _isCurrentEp(index);
+    return InkWell(
+      onTap: () {
+        if (!isCurrent) {
+          _currentPlayIndex = index;
+          widget.onEpisodeTap(ep.vid);
+        }
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 48,
+        height: 32,
+        decoration: BoxDecoration(
+          color: isCurrent ? colors.accentColor : colors.surfaceVariant,
+          borderRadius: BorderRadius.circular(8),
+          border: isCurrent ? Border.all(color: colors.accentColor, width: 2) : null,
+        ),
+        child: Center(
+          child: Text(
+            '${index + 1}',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: isCurrent ? Colors.white : colors.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -106,10 +227,10 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
           children: [
             Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '正片列表',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    '正片列表 (${eps.where((e) => e.vid == widget.vid).isNotEmpty ? (eps.indexWhere((e) => e.vid == widget.vid) + 1) : 0}/${eps.length})',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                 ),
                 Row(
@@ -122,6 +243,15 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     ),
                   ],
+                ),
+                IconButton(
+                  icon: Icon(
+                    _showTitleMode ? Icons.grid_view : Icons.list,
+                    size: 20,
+                    color: colors.iconPrimary,
+                  ),
+                  onPressed: _toggleViewMode,
+                  tooltip: _showTitleMode ? '网格视图' : '列表视图',
                 ),
               ],
             ),
@@ -160,48 +290,10 @@ class PgcSeasonPanelState extends State<PgcSeasonPanel> {
                 ),
               ),
             if (!_loading && eps.isNotEmpty)
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (int i = 0; i < eps.length; i++)
-                    _EpChip(
-                      ep: eps[i],
-                      onTap: () {
-                        _currentPlayIndex = i;
-                        widget.onEpisodeTap(eps[i].vid);
-                      },
-                    ),
-                ],
-              ),
+              _showTitleMode
+                  ? _buildListMode(eps, colors)
+                  : _buildGridMode(eps, colors),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EpChip extends StatelessWidget {
-  final PgcEpisode ep;
-  final VoidCallback onTap;
-
-  const _EpChip({required this.ep, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        decoration: BoxDecoration(
-          color: colors.inputBackground,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          ep.episodeNumber > 0 ? '${ep.episodeNumber}' : 'EP',
-          style: TextStyle(color: colors.textPrimary),
         ),
       ),
     );

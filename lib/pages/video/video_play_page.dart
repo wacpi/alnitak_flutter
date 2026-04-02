@@ -10,17 +10,25 @@ import 'widgets/video_action_buttons.dart';
 import 'widgets/collection_list.dart';
 import 'widgets/recommend_list.dart';
 import 'widgets/comment_preview_card.dart';
+import 'widgets/pgc_recommend_list.dart';
+import 'widgets/pgc_season_panel.dart';
 import '../../widgets/danmaku_overlay.dart';
+import '../../services/pgc_api_service.dart';
+import '../../models/pgc_models.dart';
 
 /// 视频播放页面（纯 UI 层，业务逻辑委托给 VideoPageController）
 class VideoPlayPage extends StatefulWidget {
   /// 路由/API 层视频标识：数字 id 或 shortId（与后端 ParseVideoID 一致）
   final String videoRef;
+  final bool pgcMode;
+  final int? epId;
   final int? initialPart;
 
   const VideoPlayPage({
     super.key,
     required this.videoRef,
+    this.pgcMode = false,
+    this.epId,
     this.initialPart,
   });
 
@@ -36,6 +44,23 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
   // 自动连播 GlobalKey
   final GlobalKey<CollectionListState> _collectionListKey = GlobalKey<CollectionListState>();
   final GlobalKey<RecommendListState> _recommendListKey = GlobalKey<RecommendListState>();
+  final GlobalKey<PgcSeasonPanelState> _pgcSeasonKey = GlobalKey<PgcSeasonPanelState>();
+  final GlobalKey<PgcRecommendListState> _pgcRecommendKey = GlobalKey<PgcRecommendListState>();
+
+  PgcPlayPanel? _pgcPanel;
+  // 预留：后续可用于顶部信息展示/缓存，当前未使用
+
+  bool get _isPGCMode => widget.pgcMode || widget.videoRef.startsWith('pgc:');
+
+  String get _resolvedVideoRef {
+    final raw = widget.videoRef.trim();
+    if (!raw.startsWith('pgc:')) return raw;
+    final parts = raw.split(':');
+    if (parts.length >= 2 && parts[1].trim().isNotEmpty) {
+      return parts[1].trim();
+    }
+    return raw;
+  }
 
   @override
   void initState() {
@@ -43,16 +68,33 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
     _playerKey = GlobalKey(debugLabel: 'player_stable');
     _controller = VideoPageController();
     _controller.setAutoPlayKeys(
-      collectionListKey: _collectionListKey,
-      recommendListKey: _recommendListKey,
+      collectionListKey: _isPGCMode ? _pgcSeasonKey : _collectionListKey,
+      recommendListKey: _isPGCMode ? _pgcRecommendKey : _recommendListKey,
     );
     _controller.addListener(_onControllerChanged);
-    _controller.init(widget.videoRef, initialPart: widget.initialPart);
+    _controller.init(_resolvedVideoRef, initialPart: widget.initialPart);
     WidgetsBinding.instance.addObserver(this);
   }
 
   void _onControllerChanged() {
     if (mounted) setState(() {});
+    if (_isPGCMode && _controller.currentVid > 0 && _pgcPanel == null) {
+      _loadPgcMeta(_controller.currentVid);
+    }
+  }
+
+  Future<void> _loadPgcMeta(int vid) async {
+    try {
+      final panel = await PgcApiService.playPanelByVideo(vid: vid);
+      final rec = await PgcApiService.recommendByVideo(vid: vid);
+      if (!mounted) return;
+      setState(() {
+        _pgcPanel = panel;
+        // 由 PgcRecommendList 自行拉取；这里仅做预留缓存位
+        // ignore: unused_local_variable
+        final _ = rec;
+      });
+    } catch (_) {}
   }
 
   @override
@@ -312,6 +354,11 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                 padding: const EdgeInsets.only(bottom: 16),
                 children: [
                   _buildDanmakuInputBar(),
+                  if (_isPGCMode && _pgcPanel?.current != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                      child: _PgcInfoCard(item: _pgcPanel!.current),
+                    ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                     child: VideoInfoCard(
@@ -335,32 +382,40 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                     ),
                   ),
                   const SizedBox(height: 16),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: AuthorCard(
-                      author: c.videoDetail!.author,
-                      initialRelationStatus: c.actionStatus!.relationStatus,
-                      onAvatarTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => UserSpacePage(userId: c.videoDetail!.author.uid),
-                          ),
-                        );
-                      },
+                  if (!_isPGCMode)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: AuthorCard(
+                        author: c.videoDetail!.author,
+                        initialRelationStatus: c.actionStatus!.relationStatus,
+                        onAvatarTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => UserSpacePage(userId: c.videoDetail!.author.uid),
+                            ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
                   const SizedBox(height: 16),
                   if (MediaQuery.of(context).size.width <= 900)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: CollectionList(
-                        key: _collectionListKey,
-                        vid: c.currentVid,
-                        currentPart: c.currentPart,
-                        onVideoTap: (vid, {int? part}) => c.switchToVideo(vid, part: part, onComplete: _scrollToTop),
-                        onPartTap: (part) => c.changePart(part, onComplete: _scrollToTop),
-                      ),
+                      child: _isPGCMode
+                          ? PgcSeasonPanel(
+                              key: _pgcSeasonKey,
+                              vid: c.currentVid,
+                              onEpisodeTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
+                            )
+                          : CollectionList(
+                              key: _collectionListKey,
+                              vid: c.currentVid,
+                              currentPart: c.currentPart,
+                              onVideoTap: (vid, {int? part}) =>
+                                  c.switchToVideo(vid, part: part, onComplete: _scrollToTop),
+                              onPartTap: (part) => c.changePart(part, onComplete: _scrollToTop),
+                            ),
                     ),
                   const SizedBox(height: 16),
                   Padding(
@@ -379,11 +434,23 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
                   if (MediaQuery.of(context).size.width <= 900)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: RecommendList(
-                        key: _recommendListKey,
-                        vid: c.currentVid,
-                        onVideoTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
-                      ),
+                      child: _isPGCMode
+                          ? PgcRecommendList(
+                              key: _pgcRecommendKey,
+                              vid: c.currentVid,
+                              onPgcTap: (item) async {
+                                final epId = item.latestEpId;
+                                if (epId == null || epId <= 0) return;
+                                final vid = await PgcApiService.resolveVidByEpisodeId(epId);
+                                if (vid == null || vid <= 0) return;
+                                c.switchToVideo(vid, onComplete: _scrollToTop);
+                              },
+                            )
+                          : RecommendList(
+                              key: _recommendListKey,
+                              vid: c.currentVid,
+                              onVideoTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
+                            ),
                     ),
                 ],
               ),
@@ -401,32 +468,51 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            AuthorCard(
-              author: c.videoDetail!.author,
-              initialRelationStatus: c.actionStatus!.relationStatus,
-              onAvatarTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => UserSpacePage(userId: c.videoDetail!.author.uid),
+            if (!_isPGCMode)
+              AuthorCard(
+                author: c.videoDetail!.author,
+                initialRelationStatus: c.actionStatus!.relationStatus,
+                onAvatarTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => UserSpacePage(userId: c.videoDetail!.author.uid),
+                    ),
+                  );
+                },
+              ),
+            const SizedBox(height: 16),
+            _isPGCMode
+                ? PgcSeasonPanel(
+                    key: _pgcSeasonKey,
+                    vid: c.currentVid,
+                    onEpisodeTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
+                  )
+                : CollectionList(
+                    key: _collectionListKey,
+                    vid: c.currentVid,
+                    currentPart: c.currentPart,
+                    onVideoTap: (vid, {int? part}) => c.switchToVideo(vid, part: part, onComplete: _scrollToTop),
+                    onPartTap: (part) => c.changePart(part, onComplete: _scrollToTop),
                   ),
-                );
-              },
-            ),
             const SizedBox(height: 16),
-            CollectionList(
-              key: _collectionListKey,
-              vid: c.currentVid,
-              currentPart: c.currentPart,
-              onVideoTap: (vid, {int? part}) => c.switchToVideo(vid, part: part, onComplete: _scrollToTop),
-              onPartTap: (part) => c.changePart(part, onComplete: _scrollToTop),
-            ),
-            const SizedBox(height: 16),
-            RecommendList(
-              key: _recommendListKey,
-              vid: c.currentVid,
-              onVideoTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
-            ),
+            _isPGCMode
+                ? PgcRecommendList(
+                    key: _pgcRecommendKey,
+                    vid: c.currentVid,
+                    onPgcTap: (item) async {
+                      final epId = item.latestEpId;
+                      if (epId == null || epId <= 0) return;
+                      final vid = await PgcApiService.resolveVidByEpisodeId(epId);
+                      if (vid == null || vid <= 0) return;
+                      c.switchToVideo(vid, onComplete: _scrollToTop);
+                    },
+                  )
+                : RecommendList(
+                    key: _recommendListKey,
+                    vid: c.currentVid,
+                    onVideoTap: (vid) => c.switchToVideo(vid, onComplete: _scrollToTop),
+                  ),
           ],
         ),
       ),
@@ -486,6 +572,65 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _PgcInfoCard extends StatelessWidget {
+  final PgcItem item;
+  const _PgcInfoCard({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.card,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              width: 90,
+              height: 120,
+              child: Image.network(item.cover, fit: BoxFit.cover, errorBuilder: (_, __, ___) => const SizedBox()),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(item.title, style: TextStyle(color: colors.textPrimary, fontSize: 16, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                Text(
+                  [
+                    if (item.year > 0) '${item.year}',
+                    if (item.area.isNotEmpty) item.area,
+                    if (item.currentEpisodes > 0) '全${item.currentEpisodes}话',
+                  ].join(' · '),
+                  style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                ),
+                if (item.rating > 0) ...[
+                  const SizedBox(height: 6),
+                  Text('评分 ${item.rating}', style: TextStyle(color: colors.accentColor, fontSize: 13)),
+                ],
+                const SizedBox(height: 6),
+                Text(
+                  item.desc.isNotEmpty ? item.desc : '暂无简介',
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: colors.textSecondary, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

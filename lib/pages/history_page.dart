@@ -166,16 +166,41 @@ class _HistoryPageState extends State<HistoryPage> {
   /// 格式化时间
   String _formatTime(String updatedAt) => TimeUtils.formatTime(updatedAt);
 
-  /// 跳转到视频播放页
+  /// 跳转到视频播放页（PGC 使用 `pgc:<vid>:<epId>` 以进入剧集面板与信息卡）
   void _navigateToVideo(HistoryItem item) {
+    final String ref;
+    if (item.pgcAttached) {
+      ref = item.epId > 0 ? 'pgc:${item.vid}:${item.epId}' : 'pgc:${item.vid}:';
+    } else {
+      ref = videoPathRef(vid: item.vid, shortId: item.shortId);
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => VideoPlayPage(
-          videoRef: videoPathRef(vid: item.vid, shortId: item.shortId),
+          videoRef: ref,
         ),
       ),
     );
+  }
+
+  String _historyPrimaryTitle(HistoryItem item) {
+    if (item.pgcAttached && (item.pgcTitle != null && item.pgcTitle!.trim().isNotEmpty)) {
+      return item.pgcTitle!.trim();
+    }
+    return item.title;
+  }
+
+  String? _historyEpisodeSubtitle(HistoryItem item) {
+    if (!item.pgcAttached) return null;
+    final epTitle = item.episodeTitle?.trim() ?? '';
+    if (item.episodeNumber > 0) {
+      final head = '第${item.episodeNumber}话';
+      if (epTitle.isNotEmpty) return '$head $epTitle';
+      return head;
+    }
+    if (epTitle.isNotEmpty) return epTitle;
+    return item.title;
   }
 
   @override
@@ -313,6 +338,26 @@ class _HistoryPageState extends State<HistoryPage> {
                         ),
                       ),
                     ),
+                    if (item.pgcAttached)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: colors.accentColor.withValues(alpha: 0.92),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            '影视',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
                     // 播放时间标签
                     Positioned(
                       bottom: 6,
@@ -378,9 +423,8 @@ class _HistoryPageState extends State<HistoryPage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // 标题
                       Text(
-                        item.title,
+                        _historyPrimaryTitle(item),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -390,8 +434,20 @@ class _HistoryPageState extends State<HistoryPage> {
                           color: colors.textPrimary,
                         ),
                       ),
+                      if (_historyEpisodeSubtitle(item) != null) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          _historyEpisodeSubtitle(item)!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1.2,
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ],
                       const Spacer(),
-                      // 观看时间
                       Text(
                         _formatTime(item.updatedAt),
                         style: TextStyle(
