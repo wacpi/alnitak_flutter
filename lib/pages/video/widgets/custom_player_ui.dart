@@ -1,3 +1,9 @@
+/// 播放器 UI 层
+/// 
+/// 负责：
+/// - VideoController 渲染层
+/// - 手势交互
+/// - 控制器 UI
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';

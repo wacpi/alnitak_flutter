@@ -1,3 +1,8 @@
+/// 视频播放器入口组件
+/// 
+/// 负责：
+/// - VideoPlayerController 初始化
+/// - 构建视频渲染 UI
 import 'dart:async';
 
 import 'package:flutter/material.dart';

@@ -1,3 +1,8 @@
+/// 视频播放页面入口
+/// 
+/// 负责：
+/// - 播放器页面组装
+/// - 全屏/半屏切换
 import 'package:flutter/material.dart';
 import '../../theme/theme_extensions.dart';
 import '../user/user_space_page.dart';

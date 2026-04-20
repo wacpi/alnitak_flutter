@@ -1,3 +1,9 @@
+/// 播放器核心控制器
+/// 
+/// 负责：
+/// - Player / VideoController 实例创建与配置
+/// - 数据源加载、播放控制、进度管理
+/// - 事件监听与状态管理
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -310,9 +316,9 @@ class VideoPlayerController extends ChangeNotifier {
     // 禁用帧插值
     _player!.setProperty('interpolation', 'no');
     // fMP4 容错：discardcorrupt 丢弃损坏帧
-    _player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
+    //_player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
     // 主动限制 back buffer 为 0 节省内存
-    //_player!.setProperty('demuxer-max-back-bytes', '0');
+    _player!.setProperty('demuxer-max-back-bytes', '0');
     // 网络超时配置
     _player!.setProperty('network-timeout', '10');
     // 解码模式配置
