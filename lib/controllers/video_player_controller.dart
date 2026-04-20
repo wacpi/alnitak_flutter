@@ -312,7 +312,7 @@ class VideoPlayerController extends ChangeNotifier {
     // fMP4 容错：discardcorrupt 丢弃损坏帧
     _player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
     // 主动限制 back buffer 为 0 节省内存
-    _player!.setProperty('demuxer-max-back-bytes', '0');
+    //_player!.setProperty('demuxer-max-back-bytes', '0');
     // 网络超时配置
     _player!.setProperty('network-timeout', '10');
     // 解码模式配置
