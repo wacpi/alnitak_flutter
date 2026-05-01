@@ -4,6 +4,7 @@
 /// - Player / VideoController 实例创建与配置
 /// - 数据源加载、播放控制、进度管理
 /// - 事件监听与状态管理
+library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';

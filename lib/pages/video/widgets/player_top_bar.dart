@@ -1,17 +1,13 @@
 import 'package:flutter/material.dart';
 
 /// 播放器顶部栏（返回 + 全屏标题滚动 + 在看人数），从 CustomPlayerUI 拆出。
-/// 全屏状态变化与标题动画由父组件通过回调驱动。
+/// 纯声明式：不在 build 期间触发副作用，全屏状态变化由父组件通过生命周期钩子处理。
 class PlayerTopBar extends StatelessWidget {
   final String title;
   final VoidCallback? onBack;
   final bool fullscreen;
-  final bool wasFullscreen;
-  final VoidCallback onFullscreenEnter;
-  final VoidCallback onFullscreenExit;
   final AnimationController titleScrollController;
   final Animation<double> titleScrollAnimation;
-  final VoidCallback checkAndStartTitleAnimation;
   final ValueNotifier<int>? onlineCount;
 
   const PlayerTopBar({
@@ -19,17 +15,14 @@ class PlayerTopBar extends StatelessWidget {
     required this.title,
     this.onBack,
     required this.fullscreen,
-    required this.wasFullscreen,
-    required this.onFullscreenEnter,
-    required this.onFullscreenExit,
     required this.titleScrollController,
     required this.titleScrollAnimation,
-    required this.checkAndStartTitleAnimation,
     this.onlineCount,
   });
 
   @override
   Widget build(BuildContext context) {
+    final showTitle = fullscreen && title.isNotEmpty;
     return Positioned(
       top: 0,
       left: 0,
@@ -52,26 +45,14 @@ class PlayerTopBar extends StatelessWidget {
                 onPressed: onBack ?? () => Navigator.of(context).maybePop(),
               ),
               Expanded(
-                child: Builder(
-                  builder: (context) {
-                    if (fullscreen && !wasFullscreen) {
-                      onFullscreenEnter();
-                    } else if (!fullscreen && wasFullscreen) {
-                      onFullscreenExit();
-                    }
-
-                    if (!fullscreen || title.isEmpty) {
-                      return const SizedBox.shrink();
-                    }
-
-                    return LayoutBuilder(
-                      builder: (context, constraints) {
-                        final maxTitleWidth = constraints.maxWidth * 0.5;
-                        return _buildScrollableTitle(context, maxTitleWidth);
-                      },
-                    );
-                  },
-                ),
+                child: showTitle
+                    ? LayoutBuilder(
+                        builder: (context, constraints) {
+                          final maxTitleWidth = constraints.maxWidth * 0.5;
+                          return _buildScrollableTitle(context, maxTitleWidth);
+                        },
+                      )
+                    : const SizedBox.shrink(),
               ),
               if (onlineCount != null && fullscreen)
                 ValueListenableBuilder<int>(

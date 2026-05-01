@@ -4,6 +4,7 @@
 /// - VideoController 渲染层
 /// - 手势交互
 /// - 控制器 UI
+library;
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -134,6 +135,15 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
         _startHideTimer();
       }
     });
+
+    // 首帧后再判定全屏：context 才可用，且避免在 build/mount 阶段触发 setState。
+    // 处理"新建实例即全屏"（FullscreenPlayerPage 内的 CustomPlayerUI）的场景。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_fullscreen != _wasFullscreen) {
+        _handleFullscreenChanged();
+      }
+    });
   }
 
 
@@ -155,10 +165,24 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
         _showSpeedPanel = false;
         _showDanmakuSettings = false;
       }
-      _wasFullscreen = _fullscreen;
+      _handleFullscreenChanged();
       if (_showControls) {
         _startHideTimer();
       }
+    }
+  }
+
+  /// 全屏状态变化时同步内部状态并重置/启动标题滚动动画。
+  /// 由 initState 的 postFrameCallback 与 didUpdateWidget 调用，确保不在 build 阶段执行。
+  void _handleFullscreenChanged() {
+    final isFs = _fullscreen;
+    _wasFullscreen = isFs;
+    _hasPlayedTitleAnimation = false;
+    _titleScrollController.reset();
+    if (isFs && widget.title.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _checkAndStartTitleAnimation();
+      });
     }
   }
 
@@ -464,7 +488,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
                     },
                   ),
 
-                  // 缓冲/加载中已合并到 MediaPlayerWidget 统一显示（方案 D），此处不再重复
+                  // 起播/缓冲不叠 Flutter 转圈，由底层 surface 呈现
 
                   // 6. 清晰度面板
                   if (_showQualityPanel && _showControls && _panelRight != null)
@@ -584,29 +608,8 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
       title: widget.title,
       onBack: widget.onBack,
       fullscreen: _fullscreen,
-      wasFullscreen: _wasFullscreen,
-      onFullscreenEnter: () {
-        setState(() {
-          _wasFullscreen = true;
-          _hasPlayedTitleAnimation = false;
-          _titleScrollController.reset();
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && widget.title.isNotEmpty) {
-            _checkAndStartTitleAnimation();
-          }
-        });
-      },
-      onFullscreenExit: () {
-        setState(() {
-          _wasFullscreen = false;
-          _hasPlayedTitleAnimation = false;
-          _titleScrollController.reset();
-        });
-      },
       titleScrollController: _titleScrollController,
       titleScrollAnimation: _titleScrollAnimation,
-      checkAndStartTitleAnimation: _checkAndStartTitleAnimation,
       onlineCount: widget.onlineCount,
     );
   }

@@ -130,6 +130,9 @@ class DanmakuController extends ChangeNotifier {
   /// 是否正在初始化阶段（surface 重建期间）
   bool _isInitializing = true;
 
+  /// 弹幕列表请求代数，防止快速换 P 时旧请求覆盖新数据。
+  int _loadGeneration = 0;
+
   /// 轨道占用状态：记录每个轨道最后一个弹幕的离开时间
   /// key: 轨道索引, value: 轨道空闲时间点（毫秒时间戳）
   final Map<int, int> _scrollTrackEndTimes = {};
@@ -246,6 +249,7 @@ class DanmakuController extends ChangeNotifier {
     String? rid,
     int part = 1,
   }) async {
+    final gen = ++_loadGeneration;
     _currentVid = vid;
     _currentRid = rid;
     _currentPart = part;
@@ -256,6 +260,8 @@ class DanmakuController extends ChangeNotifier {
         rid: rid,
         part: part,
       );
+
+      if (gen != _loadGeneration) return;
 
       // 按时间排序
       list.sort((a, b) => a.time.compareTo(b.time));
@@ -688,13 +694,21 @@ class DanmakuController extends ChangeNotifier {
 
   /// 刷新弹幕列表（发送弹幕后调用）
   Future<void> _refreshDanmakuList() async {
-    if (_currentVid == null) return;
+    final vid = _currentVid;
+    if (vid == null) return;
+    final rid = _currentRid;
+    final part = _currentPart;
 
     try {
       final list = await _danmakuService.getDanmakuList(
-        vid: _currentVid!,
-        part: _currentPart,
+        vid: vid,
+        rid: rid,
+        part: part,
       );
+
+      if (vid != _currentVid || rid != _currentRid || part != _currentPart) {
+        return;
+      }
 
       // 按时间排序
       list.sort((a, b) => a.time.compareTo(b.time));
@@ -782,6 +796,7 @@ class DanmakuController extends ChangeNotifier {
 
   /// 清空弹幕
   void clear() {
+    _loadGeneration++;
     _danmakuList.clear();
     _filteredDanmakuList.clear();
     _activeDanmakus.clear();

@@ -1,4 +1,4 @@
-import 'dart:async' show StreamSubscription, Timer;
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show WebSocket;
 import 'package:flutter/foundation.dart' show ValueNotifier;
@@ -28,6 +28,9 @@ class OnlineWebSocketService {
   String? _currentVid;
   String? _currentRid;
   String? _clientId;
+
+  /// 串行化 connect / 重连 / resume，避免并发 _doConnect 交错写错 _channel。
+  Future<void> _opChain = Future.value();
 
   /// 在线人数，播放器 UI 直接监听此 ValueNotifier
   final ValueNotifier<int> onlineCount = ValueNotifier<int>(0);
@@ -69,6 +72,16 @@ class OnlineWebSocketService {
 
   /// 连接到指定视频房间
   Future<void> connect(String vid, {String? rid}) async {
+    final f = _opChain = _opChain
+        .then((_) => _connectSequential(vid, rid))
+        .catchError((Object e, _) {
+          LoggerService.instance.logWarning('WebSocket connect 链: $e', tag: 'OnlineWebSocket');
+        });
+    return f;
+  }
+
+  Future<void> _connectSequential(String vid, String? rid) async {
+    if (_isManualClose) return;
     if (_currentVid == vid && _currentRid == rid && _channel != null) return;
 
     _cleanup();
@@ -133,9 +146,16 @@ void _onMessage(dynamic data) {
     try {
       final json = jsonDecode(data as String);
       // 后端返回 {"number": N}
-      if (json['number'] != null) {
-        final count = json['number'] as int;
-        onlineCount.value = count;
+      final n = json['number'];
+      if (n != null) {
+        final count = n is int
+            ? n
+            : n is num
+                ? n.toInt()
+                : int.tryParse(n.toString());
+        if (count != null) {
+          onlineCount.value = count;
+        }
       }
       // 处理弹幕消息 {"type": "danmaku", "danmaku": {...}}
       if (json['type'] == 'danmaku' && json['danmaku'] != null) {
@@ -197,8 +217,12 @@ void _onMessage(dynamic data) {
     );
 
     _reconnectTimer = Timer(delay, () {
-      if (!_isManualClose && _currentVid != null) {
-        _doConnect();
+      if (!_isManualClose && !_isPaused && _currentVid != null) {
+        _opChain = _opChain
+            .then((_) => _doConnect())
+            .catchError((Object e, _) {
+              LoggerService.instance.logWarning('WebSocket 重连链: $e', tag: 'OnlineWebSocket');
+            });
       }
     });
   }
@@ -220,6 +244,7 @@ void _onMessage(dynamic data) {
     if (_isPaused) return;
     _isPaused = true;
     _cleanup();
+    _opChain = Future.value();
   }
 
   /// 前台恢复：重新连接之前的 vid
@@ -228,7 +253,11 @@ void _onMessage(dynamic data) {
     _isPaused = false;
     if (_currentVid != null && !_isManualClose) {
       _reconnectAttempts = 0;
-      _doConnect();
+      _opChain = _opChain
+          .then((_) => _doConnect())
+          .catchError((Object e, _) {
+            LoggerService.instance.logWarning('WebSocket resume 链: $e', tag: 'OnlineWebSocket');
+          });
     }
   }
 
@@ -239,6 +268,7 @@ void _onMessage(dynamic data) {
     _currentVid = null;
     _currentRid = null;
     _cleanup();
+    _opChain = Future.value();
   }
 
   /// 销毁服务

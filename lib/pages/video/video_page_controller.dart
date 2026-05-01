@@ -408,7 +408,9 @@ final requestToken = ++_changePartToken;
     _currentRid = null;
 
     try {
-      await progressTracker.saveBeforeSwitch(oldVid!, oldRid, oldPart);
+      if (oldVid != null) {
+        await progressTracker.saveBeforeSwitch(oldVid, oldRid, oldPart);
+      }
 
       progressTracker.reset();
       currentPart = 1;

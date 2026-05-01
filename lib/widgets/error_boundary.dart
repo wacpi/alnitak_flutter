@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../services/logger_service.dart';
 import '../pages/main_page.dart';
@@ -27,11 +28,23 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
   Object _error = Object();
   StackTrace _stackTrace = StackTrace.empty;
 
+  // 用于在 dispose 时还原全局错误回调，避免覆盖外层注册者。
+  FlutterExceptionHandler? _previousFlutterOnError;
+  bool Function(Object, StackTrace)? _previousPlatformOnError;
+  // 我们注册到 FlutterError.onError 的闭包引用，仅当当前 handler 仍是它时才还原。
+  FlutterExceptionHandler? _flutterOnErrorRef;
+  bool Function(Object, StackTrace)? _platformOnErrorRef;
+  bool _handlersRegistered = false;
+
+  // 已计划在下一帧切换到错误态，避免一帧内重复 setState 触发风暴。
+  bool _errorRenderScheduled = false;
+
   @override
   void didUpdateWidget(ErrorBoundary oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.child != widget.child) {
       _hasError = false;
+      _errorRenderScheduled = false;
     }
   }
 
@@ -41,25 +54,48 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
     _registerErrorHandlers();
   }
 
+  @override
+  void dispose() {
+    _restoreErrorHandlers();
+    super.dispose();
+  }
+
   void _registerErrorHandlers() {
-    FlutterError.onError = (details) {
+    _previousFlutterOnError = FlutterError.onError;
+    _previousPlatformOnError = PlatformDispatcher.instance.onError;
+
+    _flutterOnErrorRef = (FlutterErrorDetails details) {
+      // 先调用上一层 handler（含 framework 默认输出），避免吞掉错误信息
+      _previousFlutterOnError?.call(details);
       _handleError(details.exception, details.stack ?? StackTrace.empty);
     };
-
-    PlatformDispatcher.instance.onError = (error, stack) {
+    _platformOnErrorRef = (Object error, StackTrace stack) {
+      final handled = _previousPlatformOnError?.call(error, stack) ?? false;
       _handleError(error, stack);
-      return true;
+      return handled || true;
     };
+
+    FlutterError.onError = _flutterOnErrorRef;
+    PlatformDispatcher.instance.onError = _platformOnErrorRef;
+    _handlersRegistered = true;
+  }
+
+  void _restoreErrorHandlers() {
+    if (!_handlersRegistered) return;
+    // 仅当全局 handler 仍是我们注册的那个时才还原；
+    // 若已被外部再次覆盖，则保持现状以免破坏链路。
+    if (identical(FlutterError.onError, _flutterOnErrorRef)) {
+      FlutterError.onError = _previousFlutterOnError;
+    }
+    if (identical(PlatformDispatcher.instance.onError, _platformOnErrorRef)) {
+      PlatformDispatcher.instance.onError = _previousPlatformOnError;
+    }
+    _handlersRegistered = false;
   }
 
   void _handleError(Object error, StackTrace stackTrace) {
-    if (mounted) {
-      setState(() {
-        _hasError = true;
-        _error = error;
-        _stackTrace = stackTrace;
-      });
-    }
+    if (!mounted) return;
+
     LoggerService.instance.logError(
       message: 'ErrorBoundary 捕获到错误',
       error: error,
@@ -67,6 +103,37 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
       context: {'hasError': true},
     );
     widget.onError?.call(error, stackTrace);
+
+    // 已经处于错误展示态或已计划切换，仅记录日志，避免错误风暴
+    if (_hasError || _errorRenderScheduled) return;
+
+    final binding = SchedulerBinding.instance;
+    final phase = binding.schedulerPhase;
+    final inFrame = phase == SchedulerPhase.transientCallbacks ||
+        phase == SchedulerPhase.midFrameMicrotasks ||
+        phase == SchedulerPhase.persistentCallbacks;
+
+    void apply() {
+      if (!mounted || _hasError) return;
+      setState(() {
+        _hasError = true;
+        _error = error;
+        _stackTrace = stackTrace;
+      });
+    }
+
+    if (inFrame) {
+      // build / layout / paint 阶段禁止 setState，推迟到下一帧
+      _errorRenderScheduled = true;
+      binding.addPostFrameCallback((_) {
+        _errorRenderScheduled = false;
+        apply();
+      });
+      // 触发下一帧
+      binding.scheduleFrame();
+    } else {
+      apply();
+    }
   }
 
   @override

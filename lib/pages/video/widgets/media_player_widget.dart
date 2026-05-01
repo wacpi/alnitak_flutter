@@ -3,6 +3,7 @@
 /// 负责：
 /// - VideoPlayerController 初始化
 /// - 构建视频渲染 UI
+library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -175,37 +176,12 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
     if (_isDisposed ||
         _controller == null ||
         !_controllerReady) {
-      return _buildLoadingWidget();
+      return const ColoredBox(color: Colors.black);
     }
 
     return Stack(
       children: [
         _buildPlayerWithGestures(),
-        // 方案七（行业惯例）：未初始化显示加载；已初始化且 hasEverPlayed 且 持续缓冲 才显示缓冲加载
-        AnimatedBuilder(
-          animation: Listenable.merge([
-            _controller!.isPlayerInitialized,
-            _controller!.hasEverPlayed,
-            _controller!.isBuffering,
-          ]),
-          builder: (context, _) {
-            if (!_controller!.isPlayerInitialized.value) {
-              return Positioned.fill(
-                child: IgnorePointer(
-                  child: _buildLoadingWidget(),
-                ),
-              );
-            }
-            if (!_controller!.hasEverPlayed.value || !_controller!.isBuffering.value) {
-              return const SizedBox.shrink();
-            }
-            return Positioned.fill(
-              child: IgnorePointer(
-                child: _buildLoadingWidget(),
-              ),
-            );
-          },
-        ),
         ValueListenableBuilder<String?>(
           valueListenable: _controller!.errorMessage,
           builder: (context, error, _) {
@@ -224,7 +200,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   }
 
   Widget _buildPlayerWithGestures() {
-    if (_controller == null) return _buildLoadingWidget();
+    if (_controller == null) return const ColoredBox(color: Colors.black);
 
     return ColoredBox(
       color: Colors.black,
@@ -265,26 +241,6 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
               );
             },
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingWidget() {
-    return const ColoredBox(
-      color: Colors.transparent,
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 48,
-              height: 48,
-              child: CircularProgressIndicator(),
-            ),
-            SizedBox(height: 12),
-            Text('加载中...', style: TextStyle(fontSize: 14)),
-          ],
         ),
       ),
     );

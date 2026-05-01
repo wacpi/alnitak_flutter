@@ -3,6 +3,7 @@
 /// 负责：
 /// - 播放器页面组装
 /// - 全屏/半屏切换
+library;
 import 'package:flutter/material.dart';
 import '../../theme/theme_extensions.dart';
 import '../user/user_space_page.dart';
@@ -193,23 +194,7 @@ class _VideoPlayPageState extends State<VideoPlayPage> with WidgetsBindingObserv
         children: [
           AspectRatio(
             aspectRatio: 16 / 9,
-            child: Container(
-              color: Colors.transparent,
-              child: const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: CircularProgressIndicator(),
-                    ),
-                    SizedBox(height: 12),
-                    Text('加载中...', style: TextStyle(fontSize: 14)),
-                  ],
-                ),
-              ),
-            ),
+            child: ColoredBox(color: Colors.black),
           ),
           const Expanded(child: SizedBox.shrink()),
         ],

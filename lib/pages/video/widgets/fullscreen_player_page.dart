@@ -89,10 +89,7 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
   Widget build(BuildContext context) {
     final c = widget.controller;
     if (!c.isPlayerInitialized.value) {
-      return const ColoredBox(
-        color: Colors.transparent,
-        child: Center(child: CircularProgressIndicator()),
-      );
+      return const ColoredBox(color: Colors.black);
     }
 
     return ColoredBox(
