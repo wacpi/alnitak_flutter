@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// 播放器进度条行（时间 + 进度条 + 时间），从 CustomPlayerUI 拆出。
@@ -36,6 +38,9 @@ class PlayerProgressSlider extends StatelessWidget {
               valueListenable: bufferedSeconds,
               builder: (context, bufSeconds, _) {
                 final maxVal = durSeconds > 0 ? durSeconds.toDouble() : 1.0;
+                final posSec = posSeconds.toDouble().clamp(0.0, maxVal);
+                final bufSec =
+                    math.max(bufSeconds.toDouble(), posSec).clamp(0.0, maxVal);
                 final displayPos = Duration(seconds: posSeconds);
                 final displayDur = Duration(seconds: durSeconds);
 
@@ -63,10 +68,10 @@ class PlayerProgressSlider extends StatelessWidget {
                           secondaryActiveTrackColor: Colors.white.withValues(alpha: 0.5),
                         ),
                         child: Slider(
-                          value: posSeconds.toDouble().clamp(0.0, maxVal),
+                          value: posSec,
                           min: 0,
                           max: maxVal,
-                          secondaryTrackValue: bufSeconds.toDouble().clamp(0.0, maxVal),
+                          secondaryTrackValue: bufSec,
                           onChangeStart: (_) => onSliderDragStart(),
                           onChanged: (v) {
                             onSliderDragUpdate(Duration(seconds: v.toInt()));

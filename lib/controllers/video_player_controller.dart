@@ -8,6 +8,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
@@ -16,7 +17,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:audio_session/audio_session.dart';
 
-import '../config/api_config.dart';
 import '../services/video_stream_service.dart';
 import '../services/cache_service.dart';
 import '../services/history_service.dart';
@@ -24,6 +24,7 @@ import '../services/logger_service.dart';
 import '../services/player_settings_service.dart';
 import '../models/data_source.dart';
 import '../models/dash_models.dart';
+import '../models/history_models.dart';
 import '../models/loop_mode.dart';
 import '../utils/wakelock_manager.dart';
 import '../utils/error_handler.dart';
@@ -97,6 +98,8 @@ class VideoPlayerController extends ChangeNotifier {
   bool _isSeeking = false;
   bool _seekInFlight = false;
   DateTime? _lastSeekAt;
+  DateTime? _playbackPositionGuardUntil;
+  Duration _playbackPositionGuardAnchor = Duration.zero;
 
   // 状态机标志位
   bool _hasPlaybackStarted = false;
@@ -125,9 +128,15 @@ class VideoPlayerController extends ChangeNotifier {
   int _lastPtsLoggedSecond = -1;
   int? _lastProgressFetchTime;
   DateTime? _lastVideoEndAt;
+  DateTime? _lastPlaybackBackwardLogAt;
   static const int _bufferingSustainMs = 1500;
   static const int _videoEndDebounceMs = 800;
-  static const int _startupReadyTimeoutMs = 1000;
+  static const int _startupReadyTimeoutMs = 1500;
+  static const int _playbackPositionGuardMs = 2000;
+  static const int _spuriousBackwardJumpMs = 1600;
+  static const int _restoreBackwardIgnoreMaxSeconds = 15;
+  /// 进度条上缓冲右端至少比当前播放位置多出这么多秒（对齐 YouTube 观感）
+  static const int _minBufferedBarAheadSeconds = 3;
   static const String _preferredQualityKey = 'preferred_video_quality_display_name';
   static const String _loopModeKey = 'video_loop_mode';
   static const String _backgroundPlayKey = 'background_play_enabled';
@@ -290,17 +299,10 @@ class VideoPlayerController extends ChangeNotifier {
     await _initAudioSession();
     await _configurePlayerOnce(decodeMode);
 
-    _player!.setMediaHeader(
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      referer: ApiConfig.baseUrl,
-    );
-
     _videoController = VideoController(
       _player!,
       configuration: VideoControllerConfiguration(
         enableHardwareAcceleration: decodeMode != 'no',
-        androidAttachSurfaceAfterVideoParameters: false,
         hwdec: decodeMode != 'no' ? decodeMode : null,
       ),
     );
@@ -313,14 +315,12 @@ class VideoPlayerController extends ChangeNotifier {
     // 音视频分离流防不同步，以音频为主，精确 seek
     _player!.setProperty('video-sync', 'audio');
     _player!.setProperty('hr-seek', 'yes');
-    
-    // 禁用帧插值
+    // mpv：非直播流起播前 demuxer 多读几秒，减轻首帧 unpause 时空窗
+    _player!.setProperty('demuxer-readahead-secs', '12');
     _player!.setProperty('interpolation', 'no');
+    _player!.setProperty('demuxer-max-back-bytes', '0');
     // fMP4 容错：discardcorrupt 丢弃损坏帧
     //_player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
-    // 主动限制 back buffer 为 0 节省内存
-    _player!.setProperty('demuxer-max-back-bytes', '0');
-    // 网络超时配置
     _player!.setProperty('network-timeout', '10');
     // 解码模式配置
     _player!.setProperty('hwdec', decodeMode);
@@ -361,7 +361,10 @@ class VideoPlayerController extends ChangeNotifier {
       startListeners();
 
       final shouldPlayAfterStable = autoPlay;
-      _logger.logDebug('setDataSource: open (seekTo=${seekTo.inSeconds}s, play: $shouldPlayAfterStable)');
+      _playbackLog(
+        'setDataSource begin session=$sessionId seekTo=${seekTo.inSeconds}s play=$shouldPlayAfterStable '
+        'vid=$_currentVid part=$_currentPart',
+      );
 
       // 组装外挂音频参数 (DASH 音视频分离支持)
       Map<String, String>? extras;
@@ -373,7 +376,12 @@ class VideoPlayerController extends ChangeNotifier {
       }
 
       await _player!.open(
-        Media(dataSource.videoSource, start: seekTo, extras: extras),
+        Media(
+          dataSource.videoSource,
+          start: seekTo,
+          extras: extras,
+          httpHeaders: dataSource.httpHeaders,
+        ),
         play: false,
       );
 
@@ -381,11 +389,15 @@ class VideoPlayerController extends ChangeNotifier {
 
       isLoading.value = false;
       isPlayerInitialized.value = true;
+      _armPlaybackPositionGuard(seekTo);
 
       if (shouldPlayAfterStable && !_isDisposed) {
         await _waitForVideoReadyBeforePlay(sessionId);
         if (!_isSessionActive(sessionId)) return;
         await play();
+        if (_isSessionActive(sessionId)) {
+          _armPlaybackPositionGuard(seekTo);
+        }
       }
     } catch (e) {
       if (!_isSessionActive(sessionId)) return;
@@ -398,10 +410,10 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> play() async {
     if (_isDisposed || _player == null) return;
-    await _player!.play();
     if (_audioSession != null) {
       await _audioSession!.setActive(true);
     }
+    await _player!.play();
   }
 
   Future<void> pause({bool isInterrupt = false}) async {
@@ -541,15 +553,32 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   void _updateBufferedSecond() {
-    final buffer = _player?.state.buffer.inSeconds ?? 0;
-    if (_supportsDash && _player != null) {
-      _tryGetVideoBuffer().then((videoBuffer) {
-        if (_isDisposed) return;
-        _updateNotifierValue(bufferedSeconds, videoBuffer > 0 ? videoBuffer : buffer);
-      });
-    } else {
-      _updateNotifierValue(bufferedSeconds, buffer);
+    final player = _player;
+    if (player == null) {
+      _updateNotifierValue(bufferedSeconds, 0);
+      return;
     }
+
+    _applyBufferedBarEnd(player, cacheRangeEnd: 0);
+
+    if (_supportsDash) {
+      _tryGetVideoCacheRangeEndSeconds().then((rangeEnd) {
+        if (_isDisposed || _player != player) return;
+        _applyBufferedBarEnd(_player!, cacheRangeEnd: rangeEnd);
+      });
+    }
+  }
+
+  void _applyBufferedBarEnd(Player player, {required int cacheRangeEnd}) {
+    final pos = player.state.position.inSeconds;
+    final dur = player.state.duration.inSeconds;
+    final demuxerEnd = player.state.buffer.inSeconds;
+    var endAbs = math.max(demuxerEnd, cacheRangeEnd);
+    endAbs = math.max(endAbs, pos + _minBufferedBarAheadSeconds);
+    if (dur > 0) {
+      endAbs = math.min(endAbs, dur);
+    }
+    _updateNotifierValue(bufferedSeconds, endAbs);
   }
 
   Future<void> fetchAndRestoreProgress() async {
@@ -585,16 +614,40 @@ class VideoPlayerController extends ChangeNotifier {
       if (_isDisposed || _currentVid != requestVid || _currentPart != requestPart) return;
       if (progressData == null) return;
 
-      final progress = progressData.progress;
-      final currentPos = player.state.position.inSeconds;
-      final targetPos = progress.toInt();
+      final targetPos = _restoreTargetSecondsFromHistory(progressData);
+      if (targetPos == null) return;
 
-      if ((targetPos - currentPos).abs() > 3) {
-        await seek(Duration(seconds: targetPos));
+      final currentPos = player.state.position.inSeconds;
+      if ((targetPos - currentPos).abs() <= 3) return;
+
+      if (targetPos < currentPos &&
+          currentPos - targetPos <= _restoreBackwardIgnoreMaxSeconds) {
+        return;
       }
+
+      _playbackLog('history restore seek current=${currentPos}s -> target=${targetPos}s vid=$requestVid part=$requestPart');
+      await seek(Duration(seconds: targetPos));
     } catch (e) {
       _logger.logWarning('恢复播放进度失败: $e');
     }
+  }
+
+  int? _restoreTargetSecondsFromHistory(PlayProgressData data) {
+    final p = data.progress;
+    if (p < 0) return null;
+    if (data.duration > 0) {
+      final adjusted = p > 2 ? p - 2 : p;
+      final remaining = data.duration - adjusted;
+      if (remaining <= 3) return null;
+    }
+    final adjustedProgress = p > 2 ? p - 2 : p;
+    return adjustedProgress.floor();
+  }
+
+  void _armPlaybackPositionGuard(Duration anchor) {
+    _playbackPositionGuardAnchor = anchor;
+    _playbackPositionGuardUntil =
+        DateTime.now().add(const Duration(milliseconds: _playbackPositionGuardMs));
   }
 
   // ===========================================================================
@@ -622,6 +675,10 @@ class VideoPlayerController extends ChangeNotifier {
           final pos = _player!.state.position;
           final dur = _player!.state.duration;
           final isRealEnd = isRealCompletion(pos.inMilliseconds, dur.inMilliseconds);
+          _playbackLog(
+            'stream.completed true pos=${pos.inMilliseconds}ms dur=${dur.inMilliseconds}ms '
+            'isRealEnd=$isRealEnd switchingQ=${isSwitchingQuality.value}',
+          );
 
           if (!isRealEnd && pos.inSeconds > 0) {
             final progress = dur.inSeconds > 0 ? pos.inMilliseconds / dur.inMilliseconds : 1.0;
@@ -641,6 +698,22 @@ class VideoPlayerController extends ChangeNotifier {
 
       _player!.stream.position.listen((position) {
         if (!_isSessionActive(sessionId) || _isDisposed || _isDisposing || _isSeeking) return;
+        final guard = _playbackPositionGuardUntil;
+        if (guard != null &&
+            DateTime.now().isBefore(guard) &&
+            position.inMilliseconds + _spuriousBackwardJumpMs <
+                _playbackPositionGuardAnchor.inMilliseconds) {
+          final now = DateTime.now();
+          final last = _lastPlaybackBackwardLogAt;
+          if (last == null || now.difference(last).inMilliseconds > 600) {
+            _lastPlaybackBackwardLogAt = now;
+            _playbackLog(
+              'position guard drop pos=${position.inMilliseconds}ms anchor=${_playbackPositionGuardAnchor.inMilliseconds}ms '
+              'until=${guard.toIso8601String()}',
+            );
+          }
+          return;
+        }
         if (isSwitchingQuality.value && position.inSeconds <= 1) return;
 
         if (!_hasPlaybackStarted) {
@@ -657,8 +730,24 @@ class VideoPlayerController extends ChangeNotifier {
             position.inSeconds <= 1 && _lastReportedPosition.inSeconds > 5) {
           final dur = _player?.state.duration ?? Duration.zero;
           if (isRealCompletion(_lastReportedPosition.inMilliseconds, dur.inMilliseconds) && dur.inSeconds > 0) {
-            _logger.logDebug('loop-file 循环重播检测: 触发 onVideoEnd');
+            _playbackLog(
+              'loop-file 循环重播检测 -> onVideoEnd lastReported=${_lastReportedPosition.inSeconds}s dur=${dur.inSeconds}s',
+            );
             _notifyVideoEndOnce();
+          }
+        }
+
+        final prevMs = _position.inMilliseconds;
+        final curMs = position.inMilliseconds;
+        if (curMs + 2500 < prevMs && prevMs > 3000 && !_isSeeking) {
+          final now = DateTime.now();
+          final last = _lastPlaybackBackwardLogAt;
+          if (last == null || now.difference(last).inMilliseconds > 800) {
+            _lastPlaybackBackwardLogAt = now;
+            _playbackLog(
+              'position backward jump ${prevMs}ms -> ${curMs}ms '
+              'dur=${_player?.state.duration.inMilliseconds ?? 0}ms',
+            );
           }
         }
 
@@ -861,6 +950,11 @@ class VideoPlayerController extends ChangeNotifier {
 
   bool _isSessionActive(int sessionId) => !_isDisposed && _player != null && _playbackSessionId == sessionId;
 
+  /// 调试：统一前缀，在 kDebugMode 下经 [LoggerService.logDebug] 输出到控制台
+  void _playbackLog(String message) {
+    _logger.logDebug(message, tag: 'Playback');
+  }
+
   void _resetPlaybackStates() {
     _bufferingShowTimer?.cancel();
     _bufferingShowTimer = null;
@@ -871,6 +965,11 @@ class VideoPlayerController extends ChangeNotifier {
     _hasJustCompleted = false;
     _isSeeking = false;
     _pendingSeekAfterSwitch = null;
+    _playbackPositionGuardUntil = null;
+    _playbackPositionGuardAnchor = Duration.zero;
+    _lastReportedPosition = Duration.zero;
+    _lastPtsLoggedSecond = -1;
+    _playbackLog('resetPlaybackStates session=$_playbackSessionId');
   }
 
   void setInitialDurationHint(double? duration) {
@@ -909,7 +1008,11 @@ class VideoPlayerController extends ChangeNotifier {
     await _seekBufferWaitIfNeeded();
 
     if (_player!.state.duration.inSeconds != 0) {
+      _playbackLog('seekInternal ${position.inMilliseconds}ms (duration ready)');
       await _player!.seek(position);
+      if (!_isDisposed && _player != null) {
+        _armPlaybackPositionGuard(position);
+      }
     } else {
       _seekTimer?.cancel();
       _seekTimer = Timer.periodic(const Duration(milliseconds: 200), (Timer t) async {
@@ -926,6 +1029,9 @@ class VideoPlayerController extends ChangeNotifier {
           if (_isDisposed || _player == null) return;
           try {
             await _player!.seek(position);
+            if (!_isDisposed && _player != null) {
+              _armPlaybackPositionGuard(position);
+            }
           } catch (e) {
             _logger.logWarning('seek 执行失败: $e');
           }
@@ -946,8 +1052,14 @@ class VideoPlayerController extends ChangeNotifier {
 
   void _notifyVideoEndOnce() {
     final now = DateTime.now();
-    if (_lastVideoEndAt != null && now.difference(_lastVideoEndAt!).inMilliseconds < _videoEndDebounceMs) return;
+    if (_lastVideoEndAt != null && now.difference(_lastVideoEndAt!).inMilliseconds < _videoEndDebounceMs) {
+      _playbackLog(
+        'onVideoEnd debounced (${now.difference(_lastVideoEndAt!).inMilliseconds}ms since last)',
+      );
+      return;
+    }
     _lastVideoEndAt = now;
+    _playbackLog('onVideoEnd -> eventListener');
     eventListener?.onVideoEnd();
   }
 
@@ -965,7 +1077,7 @@ class VideoPlayerController extends ChangeNotifier {
       final w = _player?.state.width ?? 0;
       final h = _player?.state.height ?? 0;
       final bufMs = _player?.state.buffer.inMilliseconds ?? 0;
-      if ((w > 0 && h > 0 && bufMs >= 800) || bufMs >= 2000) {
+      if ((w > 0 && h > 0 && bufMs >= 1200) || bufMs >= 2500) {
         if (!completer.isCompleted) completer.complete();
       }
     }
@@ -982,6 +1094,13 @@ class VideoPlayerController extends ChangeNotifier {
     await completer.future;
     timeout.cancel();
     for (final sub in subs) { sub.cancel(); }
+
+    if (_videoController != null && _isSessionActive(sessionId)) {
+      try {
+        await _videoController!.waitUntilFirstFrameRendered
+            .timeout(const Duration(milliseconds: 1200));
+      } catch (_) {}
+    }
   }
 
   Future<void> _handleStalled() async {
@@ -994,6 +1113,7 @@ class VideoPlayerController extends ChangeNotifier {
       try {
         final currentPos = _player!.state.position;
         if (currentPos <= Duration.zero) return;
+        _playbackLog('_handleStalled reload quality=${currentQuality.value} pos=${currentPos.inSeconds}s');
         await _reloadWithDataSource(currentQuality.value!, currentPos);
         _userIntendedPosition = currentPos;
       } catch (e) {
@@ -1066,19 +1186,20 @@ class VideoPlayerController extends ChangeNotifier {
     }
   }
 
-  Future<int> _tryGetVideoBuffer() async {
+  /// 从 demuxer-cache-state 解析视频缓存区间右端点（时间轴绝对秒数，失败返回 0）
+  Future<int> _tryGetVideoCacheRangeEndSeconds() async {
     try {
       final cacheStr = await _player!.getProperty('demuxer-cache-state');
       if (cacheStr.isEmpty) return 0;
-      final videoRangeMatch = RegExp(r'video\[(\d+)\]:(\d+)-(\d+)').firstMatch(cacheStr);
+      final videoRangeMatch =
+          RegExp(r'video\[\d+\]:\s*([\d.]+)\s*-\s*([\d.]+)', caseSensitive: false)
+              .firstMatch(cacheStr);
       if (videoRangeMatch != null) {
-        final end = int.tryParse(videoRangeMatch.group(3) ?? '') ?? 0;
-        final pos = _player?.state.position.inSeconds ?? 0;
-        final videoBuffer = end - pos;
-        if (videoBuffer > 0) return videoBuffer;
+        final end = double.tryParse(videoRangeMatch.group(2) ?? '') ?? 0.0;
+        if (end > 0) return end.ceil();
       }
     } catch (e) {
-      _logger.logDebug('获取视频缓冲状态失败: $e');
+      _logger.logDebug('获取视频缓冲区间失败: $e');
     }
     return 0;
   }
