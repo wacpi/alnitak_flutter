@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../controllers/video_player_controller.dart';
 
@@ -48,6 +51,21 @@ mixin PlayerGestureHandler<T extends StatefulWidget> on State<T> {
   // ============ 设置持久化 ============
   SharedPreferences? _gesturePrefs;
 
+  Future<void> _applyScreenBrightness(double value) async {
+    final v = value.clamp(0.0, 1.0);
+    try {
+      await ScreenBrightness.instance.setApplicationScreenBrightness(v);
+    } catch (_) {
+      // 部分桌面端/权限不足时可能失败
+    }
+  }
+
+  Future<void> _resetScreenBrightnessOnExit() async {
+    try {
+      await ScreenBrightness.instance.resetApplicationScreenBrightness();
+    } catch (_) {}
+  }
+
   /// 加载保存的音量和亮度设置
   Future<void> loadGestureSettings() async {
     try {
@@ -55,9 +73,11 @@ mixin PlayerGestureHandler<T extends StatefulWidget> on State<T> {
       final savedVolume = _gesturePrefs!.getDouble(_volumeKey) ?? 100.0;
       gesturePlayer.setVolume(savedVolume);
       final savedBrightness = _gesturePrefs!.getDouble(_brightnessKey) ?? 1.0;
+      if (!mounted) return;
       setState(() {
         playerBrightness = savedBrightness;
       });
+      await _applyScreenBrightness(savedBrightness);
     } catch (e) {
       // 加载播放器设置失败
     }
@@ -82,6 +102,7 @@ mixin PlayerGestureHandler<T extends StatefulWidget> on State<T> {
   }
 
   void disposeGesture() {
+    unawaited(_resetScreenBrightnessOnExit());
     gestureFeedback.dispose();
     isLongPressing.dispose();
   }
@@ -124,6 +145,7 @@ mixin PlayerGestureHandler<T extends StatefulWidget> on State<T> {
       final val = (_startBrightnessSnapshot - delta.dy / 1200).clamp(0.0, 1.0);
       playerBrightness = val;
       setState(() {});
+      unawaited(_applyScreenBrightness(val));
       _showFeedback(Icons.brightness_medium, '亮度 ${(val * 100).toInt()}%', val);
     } else if (_gestureType == 3) {
       final total = gesturePlayer.state.duration.inSeconds;
