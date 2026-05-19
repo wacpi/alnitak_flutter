@@ -340,9 +340,9 @@ class VideoPlayerController extends ChangeNotifier {
     // 解码模式配置
     _player!.setProperty('hwdec', decodeMode);
 
-    // 外挂字幕：无底板、深色描边、适当放大（libmpv）
+    // 外挂字幕：禁用 mpv 原生渲染，使用 Flutter SubtitleView 渲染
     try {
-      _player!.setProperty('sub-scale', '9.0');
+      _player!.setProperty('sub-visibility', 'no');
       _player!.setProperty('sub-ass', 'no');
       _player!.setProperty('sub-border-style', 'outline-and-shadow');
       _player!.setProperty('sub-back-color', '#00000000');
@@ -1317,6 +1317,7 @@ class VideoPlayerController extends ChangeNotifier {
       final text = await SubtitleApiService.fetchVttPlain(item.url);
       if (!_isSessionActive(sessionId) || _player == null) return;
       try {
+        _player!.setProperty('sub-visibility', 'no');
         _player!.setProperty('sub-ass', 'no');
         _player!.setProperty('sub-border-style', 'outline-and-shadow');
         _player!.setProperty('sub-back-color', '#00000000');
@@ -1330,6 +1331,7 @@ class VideoPlayerController extends ChangeNotifier {
         ),
       );
       try {
+        _player!.setProperty('sub-visibility', 'no');
         _player!.setProperty('sub-ass', 'no');
         _player!.setProperty('sub-border-style', 'outline-and-shadow');
         _player!.setProperty('sub-back-color', '#00000000');

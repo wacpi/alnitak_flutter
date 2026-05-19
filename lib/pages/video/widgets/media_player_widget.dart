@@ -70,7 +70,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   VideoPlayerController? _controller;
   bool _controllerReady = false;
   bool _isDisposed = false;
-  SubtitleViewConfiguration _subtitleConfig = const SubtitleViewConfiguration();
+  SubtitleViewConfiguration _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
 
   @override
   void initState() {
@@ -111,13 +111,15 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   }
 
   void _loadSubtitleConfig() {
-    PlayerSettingsService.getSubtitleConfig().then((config) {
-      if (!_isDisposed && mounted) {
-        setState(() {
-          _subtitleConfig = config;
-        });
-      }
-    });
+    PlayerSettingsService.subtitleConfigNotifier.addListener(_onSubtitleConfigChanged);
+  }
+
+  void _onSubtitleConfigChanged() {
+    if (!_isDisposed && mounted) {
+      setState(() {
+        _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
+      });
+    }
   }
 
   void _initializePlayer() {
@@ -166,6 +168,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   @override
   void dispose() {
     _isDisposed = true;
+    PlayerSettingsService.subtitleConfigNotifier.removeListener(_onSubtitleConfigChanged);
     WidgetsBinding.instance.removeObserver(this);
 
     final controller = _controller;

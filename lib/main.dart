@@ -10,6 +10,7 @@ import 'pages/settings_page.dart';
 import 'theme/app_theme.dart';
 import 'services/theme_service.dart';
 import 'services/logger_service.dart';
+import 'services/player_settings_service.dart';
 import 'services/audio_service_handler.dart';
 import 'config/api_config.dart';
 import 'utils/http_client.dart';
@@ -52,6 +53,7 @@ Future<void> _init() async {
   await TokenManager().initialize();
   await HttpClient().init();
   await AuthStateManager().initialize();
+  await PlayerSettingsService.initialize();
   await ScreenUtil.ensureScreenSize();
   if (kDebugMode) {
     LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');

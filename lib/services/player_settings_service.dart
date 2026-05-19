@@ -93,7 +93,16 @@ class PlayerSettingsService {
 
   static const String _subtitleConfigKey = 'subtitle_view_configuration';
 
-  static Future<SubtitleViewConfiguration> getSubtitleConfig() async {
+  /// 响应式通知：有 player widget 监听时，修改设置可实时生效。
+  static final subtitleConfigNotifier = ValueNotifier<SubtitleViewConfiguration>(
+    const SubtitleViewConfiguration(),
+  );
+
+  static Future<void> _initNotifier() async {
+    subtitleConfigNotifier.value = await _loadFromPrefs();
+  }
+
+  static Future<SubtitleViewConfiguration> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_subtitleConfigKey);
     if (raw == null || raw.isEmpty) return const SubtitleViewConfiguration();
@@ -103,7 +112,9 @@ class PlayerSettingsService {
         visible: map['visible'] as bool? ?? true,
         fontSize: (map['fontSize'] as num?)?.toDouble() ?? 32.0,
         fontColor: Color(map['fontColor'] as int? ?? 0xffffffff),
-        backgroundColor: map['backgroundColor'] != null ? Color(map['backgroundColor'] as int) : null,
+        backgroundColor: map['backgroundColor'] != null
+            ? Color(map['backgroundColor'] as int)
+            : const Color(0xaa000000),
         strokeColor: map['strokeColor'] != null ? Color(map['strokeColor'] as int) : null,
         strokeWidth: (map['strokeWidth'] as num?)?.toDouble() ?? 0.0,
         fontWeight: FontWeight.values[map['fontWeightIndex'] as int? ?? 3],
@@ -111,6 +122,10 @@ class PlayerSettingsService {
     } catch (_) {
       return const SubtitleViewConfiguration();
     }
+  }
+
+  static Future<SubtitleViewConfiguration> getSubtitleConfig() async {
+    return _loadFromPrefs();
   }
 
   static Future<void> setSubtitleConfig(SubtitleViewConfiguration config) async {
@@ -125,6 +140,12 @@ class PlayerSettingsService {
       'fontWeightIndex': FontWeight.values.indexOf(config.fontWeight),
     };
     await prefs.setString(_subtitleConfigKey, jsonEncode(map));
+    subtitleConfigNotifier.value = config;
+  }
+
+  /// 应用启动时调用一次（在 main.dart 中），确保 notifier 持有正确初值。
+  static Future<void> initialize() async {
+    await _initNotifier();
   }
 
   static String getDecodeModeDisplayName(String mode) {

@@ -67,6 +67,12 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSubtitleConfig();
   }
 
+  @override
+  void dispose() {
+    PlayerSettingsService.subtitleConfigNotifier.removeListener(_onSubtitleConfigChanged);
+    super.dispose();
+  }
+
   /// 检查登录状态
   Future<void> _checkLoginStatus() async {
     final isLoggedIn = await _authService.isLoggedInAsync();
@@ -273,11 +279,15 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   /// 加载字幕样式设置
-  Future<void> _loadSubtitleConfig() async {
-    final config = await PlayerSettingsService.getSubtitleConfig();
+  void _loadSubtitleConfig() {
+    _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
+    PlayerSettingsService.subtitleConfigNotifier.addListener(_onSubtitleConfigChanged);
+  }
+
+  void _onSubtitleConfigChanged() {
     if (mounted) {
       setState(() {
-        _subtitleConfig = config;
+        _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
       });
     }
   }

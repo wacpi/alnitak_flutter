@@ -29,7 +29,7 @@ class FullscreenPlayerPage extends StatefulWidget {
 
 class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
   Timer? _orientationUpdateTimer;
-  SubtitleViewConfiguration _subtitleConfig = const SubtitleViewConfiguration();
+  SubtitleViewConfiguration _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
 
   @override
   void initState() {
@@ -48,6 +48,7 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
   @override
   void dispose() {
     _orientationUpdateTimer?.cancel();
+    PlayerSettingsService.subtitleConfigNotifier.removeListener(_onSubtitleConfigChanged);
     // 退出时已在 _exitFullscreen 中恢复过，此处兜底（如系统返回键）
     _setFullscreenUI(false);
     super.dispose();
@@ -83,13 +84,15 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
   }
 
   void _loadSubtitleConfig() {
-    PlayerSettingsService.getSubtitleConfig().then((config) {
-      if (mounted) {
-        setState(() {
-          _subtitleConfig = config;
-        });
-      }
-    });
+    PlayerSettingsService.subtitleConfigNotifier.addListener(_onSubtitleConfigChanged);
+  }
+
+  void _onSubtitleConfigChanged() {
+    if (mounted) {
+      setState(() {
+        _subtitleConfig = PlayerSettingsService.subtitleConfigNotifier.value;
+      });
+    }
   }
 
   void _exitFullscreen() {
