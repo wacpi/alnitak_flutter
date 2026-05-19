@@ -24,6 +24,8 @@ import '../services/logger_service.dart';
 import '../services/player_settings_service.dart';
 import '../models/data_source.dart';
 import '../models/dash_models.dart';
+import '../models/subtitle_track_item.dart';
+import '../services/subtitle_api_service.dart';
 import '../models/history_models.dart';
 import '../models/loop_mode.dart';
 import '../utils/wakelock_manager.dart';
@@ -73,6 +75,15 @@ class VideoPlayerController extends ChangeNotifier {
   // 用户设置状态
   final ValueNotifier<LoopMode> loopMode = ValueNotifier(LoopMode.off);
   final ValueNotifier<bool> backgroundPlayEnabled = ValueNotifier(false);
+
+  /// 当前分 P 可用字幕轨（先于 [Player.open] 拉列表会在部分机型上不可靠；由 [setDataSource] 成功后同步）
+  final ValueNotifier<List<SubtitleTrackItem>> subtitleTracks =
+      ValueNotifier<List<SubtitleTrackItem>>([]);
+  /// `null`：用户关闭或未选轨；`>=0`：对应 [subtitleTracks] 下标
+  final ValueNotifier<int?> selectedSubtitleIndex = ValueNotifier<int?>(null);
+
+  /// 与字幕 API [SubtitleApiService.fetchTracks] 对齐的资源键（通常为 shortId 或数字 id 字符串）
+  String? _subtitleResourceKey;
 
   // ===========================================================================
   // 4. 内部状态变量
@@ -182,6 +193,10 @@ class VideoPlayerController extends ChangeNotifier {
 
     try {
       _currentResourceId = resourceId;
+      _subtitleResourceKey = resourceId.toString().trim();
+      subtitleTracks.value = [];
+      selectedSubtitleIndex.value = null;
+
       isLoading.value = true;
       errorMessage.value = null;
       isPlayerInitialized.value = false;
@@ -325,6 +340,20 @@ class VideoPlayerController extends ChangeNotifier {
     // 解码模式配置
     _player!.setProperty('hwdec', decodeMode);
 
+    // 外挂字幕：无底板、深色描边、适当放大（libmpv）
+    try {
+      _player!.setProperty('sub-scale', '9.0');
+      _player!.setProperty('sub-ass', 'no');
+      _player!.setProperty('sub-border-style', 'outline-and-shadow');
+      _player!.setProperty('sub-back-color', '#00000000');
+      _player!.setProperty('sub-outline-size', '2.0');
+      _player!.setProperty('sub-outline-color', '#FF000000');
+      _player!.setProperty('sub-shadow-offset', '0');
+      _player!.setProperty('sub-color', '#FFFFFFFF');
+    } catch (_) {
+      /* 个别编译选项可能裁剪属性 */
+    }
+
     await _syncLoopProperty();
     await _player!.setAudioTrack(AudioTrack.auto());
   }
@@ -399,6 +428,8 @@ class VideoPlayerController extends ChangeNotifier {
           _armPlaybackPositionGuard(seekTo);
         }
       }
+
+      unawaited(_syncExternalSubtitleTracks(sessionId));
     } catch (e) {
       if (!_isSessionActive(sessionId)) return;
       _isSeeking = false;
@@ -1243,6 +1274,118 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   // ===========================================================================
+  // 11b. 外挂字幕（须在 [Player.open] 成功之后挂载，与 web「先播再 hydrate」同源顺序）
+  // ===========================================================================
+
+  Future<void> _syncExternalSubtitleTracks(int sessionId) async {
+    final key = _subtitleResourceKey;
+    if (key == null || key.isEmpty || _player == null) return;
+    try {
+      final list = await SubtitleApiService.fetchTracks(key);
+      if (!_isSessionActive(sessionId)) return;
+
+      subtitleTracks.value = List<SubtitleTrackItem>.from(list);
+
+      if (list.isEmpty) {
+        selectedSubtitleIndex.value = null;
+        await _player!.setSubtitleTrack(SubtitleTrack.no());
+        return;
+      }
+
+      final def = list.indexWhere((t) => t.isDefault);
+      final idx = def >= 0 ? def : 0;
+      await _applySubtitleTrackItem(sessionId, list[idx], idx);
+    } catch (e) {
+      _logger.logWarning('字幕列表加载失败: $e');
+      if (!_isSessionActive(sessionId)) return;
+      subtitleTracks.value = [];
+      selectedSubtitleIndex.value = null;
+      try {
+        await _player?.setSubtitleTrack(SubtitleTrack.no());
+      } catch (_) {/* noop */}
+    }
+  }
+
+  Future<void> _applySubtitleTrackItem(
+    int sessionId,
+    SubtitleTrackItem item,
+    int index, {
+    bool persistPreference = false,
+  }) async {
+    if (!_isSessionActive(sessionId) || _player == null) return;
+    try {
+      final text = await SubtitleApiService.fetchVttPlain(item.url);
+      if (!_isSessionActive(sessionId) || _player == null) return;
+      try {
+        _player!.setProperty('sub-ass', 'no');
+        _player!.setProperty('sub-border-style', 'outline-and-shadow');
+        _player!.setProperty('sub-back-color', '#00000000');
+        _player!.setProperty('sub-shadow-offset', '0');
+      } catch (_) {}
+      await _player!.setSubtitleTrack(
+        SubtitleTrack.data(
+          text,
+          title: item.displayLabel,
+          language: item.lang,
+        ),
+      );
+      try {
+        _player!.setProperty('sub-ass', 'no');
+        _player!.setProperty('sub-border-style', 'outline-and-shadow');
+        _player!.setProperty('sub-back-color', '#00000000');
+        _player!.setProperty('sub-shadow-offset', '0');
+      } catch (_) {}
+      if (_isSessionActive(sessionId)) {
+        selectedSubtitleIndex.value = index;
+        if (persistPreference) {
+          unawaited(
+            PlayerSettingsService.saveSubtitlePreference(
+              label: item.displayLabel,
+              lang: item.lang,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      _logger.logWarning('字幕挂载失败 (${item.lang}): $e');
+    }
+  }
+
+  Future<void> selectSubtitleIndex(int index, {bool persistPreference = true}) async {
+    if (_player == null) return;
+    final list = subtitleTracks.value;
+    if (index < 0 || index >= list.length) return;
+    final sid = _playbackSessionId;
+    await _applySubtitleTrackItem(sid, list[index], index,
+        persistPreference: persistPreference);
+  }
+
+  Future<void> toggleSubtitleQuick() async {
+    if (_player == null) return;
+    final tracks = subtitleTracks.value;
+    if (tracks.isEmpty) return;
+    if (selectedSubtitleIndex.value != null) {
+      await disableSubtitles();
+      return;
+    }
+    final i = await PlayerSettingsService.pickPreferredSubtitleTrackIndex(tracks);
+    await selectSubtitleIndex(i, persistPreference: false);
+  }
+
+  Future<void> disableSubtitles() async {
+    if (_player == null) return;
+    final sid = _playbackSessionId;
+    try {
+      await _player!.setSubtitleTrack(SubtitleTrack.no());
+    } catch (e) {
+      _logger.logWarning('关闭字幕失败: $e');
+    }
+    if (_isSessionActive(sid)) {
+      selectedSubtitleIndex.value = null;
+    }
+  }
+
+  // ===========================================================================
   // 12. 释放资源 Dispose
   // ===========================================================================
 
@@ -1300,6 +1443,8 @@ class VideoPlayerController extends ChangeNotifier {
     durationSeconds.dispose();
     bufferedSeconds.dispose();
     isSliderMoving.dispose();
+    subtitleTracks.dispose();
+    selectedSubtitleIndex.dispose();
 
     super.dispose();
   }

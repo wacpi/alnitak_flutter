@@ -9,6 +9,7 @@ import '../../utils/time_utils.dart';
 import '../../utils/video_status_utils.dart';
 import '../../widgets/loading_more_indicator.dart';
 import 'video_upload_page.dart';
+import 'video_subtitle_pages.dart';
 
 class VideoManuscriptPage extends StatefulWidget {
   const VideoManuscriptPage({super.key});
@@ -586,6 +587,13 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                 onSelected: (value) {
                   if (value == 'edit') {
                     _editVideo(video);
+                  } else if (value == 'subtitle') {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (context) =>
+                            VideoSubtitleHubPage(vid: video.vid),
+                      ),
+                    );
                   } else if (value == 'delete') {
                     _deleteVideo(video);
                   }
@@ -598,6 +606,16 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                         Icon(Icons.edit, size: 20),
                         SizedBox(width: 8),
                         Text('编辑'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'subtitle',
+                    child: Row(
+                      children: [
+                        Icon(Icons.subtitles_outlined, size: 20),
+                        SizedBox(width: 8),
+                        Text('字幕'),
                       ],
                     ),
                   ),

@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -50,6 +51,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _expandBuffer = true;
   // 音频输出（仅 Android）：audiotrack/aaudio/opensles
   String _audioOutput = 'audiotrack';
+  SubtitleViewConfiguration _subtitleConfig = const SubtitleViewConfiguration();
 
   @override
   void initState() {
@@ -62,6 +64,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadDecodeModeSetting();
     _loadExpandBufferSetting();
     _loadAudioOutputSetting();
+    _loadSubtitleConfig();
   }
 
   /// 检查登录状态
@@ -267,6 +270,24 @@ class _SettingsPageState extends State<SettingsPage> {
         _audioOutput = value;
       });
     }
+  }
+
+  /// 加载字幕样式设置
+  Future<void> _loadSubtitleConfig() async {
+    final config = await PlayerSettingsService.getSubtitleConfig();
+    if (mounted) {
+      setState(() {
+        _subtitleConfig = config;
+      });
+    }
+  }
+
+  /// 保存字幕样式设置
+  Future<void> _saveSubtitleConfig(SubtitleViewConfiguration config) async {
+    await PlayerSettingsService.setSubtitleConfig(config);
+    setState(() {
+      _subtitleConfig = config;
+    });
   }
 
   /// 保存音频输出设置
@@ -727,6 +748,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 colors: colors,
               ),
             ],
+            _buildDivider(colors),
+            SubtitleSettingsListTile(
+              current: _subtitleConfig,
+              onChanged: _saveSubtitleConfig,
+            ),
           ], colors),
 
           const SizedBox(height: 12),

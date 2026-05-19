@@ -16,6 +16,7 @@ import 'player_gesture_handler.dart';
 import 'player_quality_panel.dart';
 import 'player_speed_panel.dart';
 import 'player_progress_slider.dart';
+import 'player_subtitle_panel.dart';
 import 'player_top_bar.dart';
 import 'player_bottom_bar.dart';
 import 'player_control_buttons.dart';
@@ -87,6 +88,12 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
   late Animation<double> _titleScrollAnimation;
   bool _wasFullscreen = false;
 
+
+  // ============ 字幕面板 ============
+  bool _showSubtitlePanel = false;
+  final GlobalKey _subtitleButtonKey = GlobalKey();
+  double? _subtitlePanelRight;
+  double? _subtitlePanelBottom;
 
   // ============ 清晰度面板 ============
   bool _showQualityPanel = false;
@@ -162,6 +169,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
     if (oldWidget.forceFullscreen != widget.forceFullscreen) {
       if (!_fullscreen) {
         _showQualityPanel = false;
+        _showSubtitlePanel = false;
         _showSpeedPanel = false;
         _showDanmakuSettings = false;
       }
@@ -204,8 +212,11 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
   }
 
   void _toggleControls() {
-    if (_showQualityPanel) {
-      setState(() => _showQualityPanel = false);
+    if (_showQualityPanel || _showSubtitlePanel) {
+      setState(() {
+        _showQualityPanel = false;
+        _showSubtitlePanel = false;
+      });
       _startHideTimer();
       return;
     }
@@ -245,6 +256,39 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
       _panelRight = (distFromRight - 15.0).clamp(0.0, overlaySize.width - 76);
       _panelBottom = buttonBottomToScreenBottom + (isFull ? 30.0 : 55.0);
       _showQualityPanel = true;
+      _showSubtitlePanel = false;
+      _showSpeedPanel = false;
+    });
+    _hideTimer?.cancel();
+  }
+
+  void _toggleSubtitlePanel() {
+    if (widget.logic.subtitleTracks.value.isEmpty) return;
+
+    if (_showSubtitlePanel) {
+      setState(() => _showSubtitlePanel = false);
+      _startHideTimer();
+      return;
+    }
+
+    final buttonBox = _subtitleButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (buttonBox == null) return;
+
+    final isFull = _fullscreen;
+    final overlaySize = (context.findRenderObject() as RenderBox).size;
+    final distFromRight = _calcPanelRight(_subtitleButtonKey);
+    if (distFromRight == null) return;
+
+    final buttonGlobalPos = buttonBox.localToGlobal(Offset.zero);
+    final buttonBottomToScreenBottom =
+        overlaySize.height - (buttonGlobalPos.dy + buttonBox.size.height);
+
+    setState(() {
+      _subtitlePanelRight = (distFromRight - 15.0).clamp(0.0, overlaySize.width - 100);
+      _subtitlePanelBottom = buttonBottomToScreenBottom + (isFull ? 30.0 : 55.0);
+      _showSubtitlePanel = true;
+      _showQualityPanel = false;
+      _showSpeedPanel = false;
     });
     _hideTimer?.cancel();
   }
@@ -490,7 +534,6 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
 
                   // 起播/缓冲不叠 Flutter 转圈，由底层 surface 呈现
 
-                  // 6. 清晰度面板
                   if (_showQualityPanel && _showControls && _panelRight != null)
                     PlayerQualityPanel(
                       qualities: widget.logic.availableQualities.value,
@@ -505,6 +548,19 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
                       },
                       right: _panelRight!,
                       bottom: _panelBottom ?? 50,
+                    ),
+
+                  if (_showSubtitlePanel &&
+                      _showControls &&
+                      _subtitlePanelRight != null)
+                    PlayerSubtitlePanel(
+                      logic: widget.logic,
+                      right: _subtitlePanelRight!,
+                      bottom: _subtitlePanelBottom ?? 50,
+                      onSelect: () {
+                        setState(() => _showSubtitlePanel = false);
+                        _startHideTimer();
+                      },
                     ),
 
                   // 6.5 倍速选择面板
@@ -728,6 +784,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
         showDanmakuInput: _showDanmakuInput,
         currentSpeed: _currentSpeed,
         qualityButtonKey: _qualityButtonKey,
+        subtitleButtonKey: _subtitleButtonKey,
         speedButtonKey: _speedButtonKey,
         onPlayPause: () {
           if (widget.controller.player.state.playing) {
@@ -742,6 +799,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
             _showDanmakuInput = false;
             if (_showDanmakuSettings) {
               _showQualityPanel = false;
+              _showSubtitlePanel = false;
             }
           });
           if (!_showDanmakuSettings) {
@@ -755,6 +813,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
             _showDanmakuInput = !_showDanmakuInput;
             _showDanmakuSettings = false;
             _showQualityPanel = false;
+            _showSubtitlePanel = false;
             _showControls = false;
           });
           if (_showDanmakuInput) {
@@ -765,6 +824,13 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
         },
         onToggleSpeedPanel: _toggleSpeedPanel,
         onToggleQualityPanel: _toggleQualityPanel,
+        onSubtitleQuickTap: () async {
+          await widget.logic.toggleSubtitleQuick();
+          if (mounted && _showSubtitlePanel) {
+            setState(() => _showSubtitlePanel = false);
+          }
+        },
+        onSubtitleLongPressOpenPanel: _toggleSubtitlePanel,
         onToggleFullscreen: () async {
           if (widget.onFullscreenToggle != null) {
             widget.onFullscreenToggle!();
@@ -788,6 +854,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
       _showSpeedPanel = !_showSpeedPanel;
       if (_showSpeedPanel) {
         _showQualityPanel = false;
+        _showSubtitlePanel = false;
         _showDanmakuSettings = false;
         _hideTimer?.cancel();
       } else {

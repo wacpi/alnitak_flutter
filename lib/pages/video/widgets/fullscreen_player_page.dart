@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../../../controllers/video_player_controller.dart';
 import '../../../controllers/danmaku_controller.dart';
+import '../../../services/player_settings_service.dart';
 import 'custom_player_ui.dart';
 
 /// 全屏播放页：使用与 [MediaPlayerWidget] 相同的 controller，仅做全屏展示与退出。
@@ -28,10 +29,12 @@ class FullscreenPlayerPage extends StatefulWidget {
 
 class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
   Timer? _orientationUpdateTimer;
+  SubtitleViewConfiguration _subtitleConfig = const SubtitleViewConfiguration();
 
   @override
   void initState() {
     super.initState();
+    _loadSubtitleConfig();
     _setFullscreenUI(true);
     // 若进入时尚未拿到视频尺寸，延迟再试一次（首帧解码后会有 width/height）
     _orientationUpdateTimer = Timer(const Duration(milliseconds: 800), () {
@@ -79,6 +82,16 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
     }
   }
 
+  void _loadSubtitleConfig() {
+    PlayerSettingsService.getSubtitleConfig().then((config) {
+      if (mounted) {
+        setState(() {
+          _subtitleConfig = config;
+        });
+      }
+    });
+  }
+
   void _exitFullscreen() {
     // 先恢复系统 UI（方向 + 状态栏），再 pop，使退出动画与界面状态同步、更丝滑
     _setFullscreenUI(false);
@@ -102,6 +115,7 @@ class _FullscreenPlayerPageState extends State<FullscreenPlayerPage> {
             builder: (context, bgEnabled, _) {
               return Video(
                 controller: c.videoController,
+                subtitleViewConfiguration: _subtitleConfig,
                 pauseUponEnteringBackgroundMode: !bgEnabled,
               );
             },

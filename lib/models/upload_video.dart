@@ -73,6 +73,8 @@ class EditVideo {
 /// 视频资源模型
 class VideoResource {
   final String id;
+  /// 短 ID（与播放页 `resourceShortId`、字幕列表参数一致）
+  final String? shortId;
   final String title;
   final String? url;
   final double? duration;
@@ -83,6 +85,7 @@ class VideoResource {
 
   VideoResource({
     required this.id,
+    this.shortId,
     required this.title,
     this.url,
     this.duration,
@@ -95,6 +98,7 @@ class VideoResource {
   factory VideoResource.fromJson(Map<String, dynamic> json) {
     return VideoResource(
       id: json['id']?.toString() ?? '',
+      shortId: json['shortId']?.toString(),
       title: json['title'] as String? ?? '',
       url: json['url'] as String?,
       duration: (json['duration'] as num?)?.toDouble(),
@@ -108,6 +112,7 @@ class VideoResource {
   Map<String, dynamic> toJson() {
     return {
       'id': id,
+      if (shortId != null) 'shortId': shortId,
       'title': title,
       if (url != null) 'url': url,
       if (duration != null) 'duration': duration,

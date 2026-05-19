@@ -68,6 +68,7 @@ dependencies:
   connectivity_plus: ^7.1.1
   # 文件加密
   crypto: ^3.0.3
+  flutter_svg: ^2.2.3
   # 文件路径处理
   path: ^1.9.0
   file_picker: ^10.3.10
@@ -119,6 +120,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/player/subtitles_off.svg
+    - assets/player/subtitles_on.svg
 
   # To add assets to your application, add an assets section, like this:
   # assets:

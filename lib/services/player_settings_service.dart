@@ -1,4 +1,10 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/subtitle_track_item.dart';
 
 /// 播放器设置持久化服务
 ///
@@ -8,6 +14,52 @@ class PlayerSettingsService {
   static const String _decodeModeKey = 'video_decode_mode';
   static const String _expandBufferKey = 'video_expand_buffer';
   static const String _audioOutputKey = 'video_audio_output';
+
+  /// 与 Web「subtitle-preference」、wplayer-next 同源 localStorage key
+  static const String subtitlePreferenceKey = 'alnitak-pref-subtitle-track';
+
+  static Future<void> saveSubtitlePreference(
+      {required String label, required String lang}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      subtitlePreferenceKey,
+      jsonEncode({'label': label.trim(), 'lang': lang.trim()}),
+    );
+  }
+
+  /// 无记忆或未匹配任一轨则返回第一条（下标 `0`）。
+  static Future<int> pickPreferredSubtitleTrackIndex(
+      List<SubtitleTrackItem> tracks) async {
+    if (tracks.isEmpty) return 0;
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(subtitlePreferenceKey);
+    if (raw == null || raw.isEmpty) return 0;
+    try {
+      final o = jsonDecode(raw);
+      if (o is! Map) return 0;
+      final plRaw = o['label'];
+      final langRaw = o['lang'];
+      final pl = plRaw is String ? plRaw.trim() : '';
+      final lang = langRaw is String ? langRaw.trim() : '';
+      if (pl.isEmpty && lang.isEmpty) return 0;
+      String norm(String s) => s.trim().toLowerCase();
+      if (pl.isNotEmpty) {
+        final nl = norm(pl);
+        for (var i = 0; i < tracks.length; i++) {
+          if (norm(tracks[i].displayLabel) == nl) return i;
+        }
+      }
+      if (lang.isNotEmpty) {
+        final lc = norm(lang);
+        for (var i = 0; i < tracks.length; i++) {
+          if (norm(tracks[i].lang) == lc) return i;
+        }
+      }
+    } catch (_) {
+      /* bad json */
+    }
+    return 0;
+  }
 
   static Future<String> getDecodeMode() async {
     final prefs = await SharedPreferences.getInstance();
@@ -37,6 +89,42 @@ class PlayerSettingsService {
   static Future<void> setAudioOutput(String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_audioOutputKey, value);
+  }
+
+  static const String _subtitleConfigKey = 'subtitle_view_configuration';
+
+  static Future<SubtitleViewConfiguration> getSubtitleConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_subtitleConfigKey);
+    if (raw == null || raw.isEmpty) return const SubtitleViewConfiguration();
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return SubtitleViewConfiguration(
+        visible: map['visible'] as bool? ?? true,
+        fontSize: (map['fontSize'] as num?)?.toDouble() ?? 32.0,
+        fontColor: Color(map['fontColor'] as int? ?? 0xffffffff),
+        backgroundColor: map['backgroundColor'] != null ? Color(map['backgroundColor'] as int) : null,
+        strokeColor: map['strokeColor'] != null ? Color(map['strokeColor'] as int) : null,
+        strokeWidth: (map['strokeWidth'] as num?)?.toDouble() ?? 0.0,
+        fontWeight: FontWeight.values[map['fontWeightIndex'] as int? ?? 3],
+      );
+    } catch (_) {
+      return const SubtitleViewConfiguration();
+    }
+  }
+
+  static Future<void> setSubtitleConfig(SubtitleViewConfiguration config) async {
+    final prefs = await SharedPreferences.getInstance();
+    final map = <String, dynamic>{
+      'visible': config.visible,
+      'fontSize': config.fontSize,
+      'fontColor': config.fontColor.toARGB32(),
+      'backgroundColor': config.backgroundColor?.toARGB32(),
+      'strokeColor': config.strokeColor?.toARGB32(),
+      'strokeWidth': config.strokeWidth,
+      'fontWeightIndex': FontWeight.values.indexOf(config.fontWeight),
+    };
+    await prefs.setString(_subtitleConfigKey, jsonEncode(map));
   }
 
   static String getDecodeModeDisplayName(String mode) {

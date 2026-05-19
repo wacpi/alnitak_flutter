@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:media_kit/media_kit.dart';
 import '../../../controllers/video_player_controller.dart';
 import '../../../controllers/danmaku_controller.dart';
+import '../../../models/subtitle_track_item.dart';
 import 'player_quality_panel.dart';
 
 /// 播放器底栏控制按钮行
@@ -25,9 +27,15 @@ class PlayerControlButtons extends StatelessWidget {
   final VoidCallback onToggleDanmakuInput;
   final VoidCallback onToggleSpeedPanel;
   final VoidCallback onToggleQualityPanel;
+
+  /// 字幕：单击显隐；长按选轨面板
+  final Future<void> Function() onSubtitleQuickTap;
+  final VoidCallback onSubtitleLongPressOpenPanel;
+
   final VoidCallback onToggleFullscreen;
   final VoidCallback onInteraction;
   final GlobalKey qualityButtonKey;
+  final GlobalKey subtitleButtonKey;
   final GlobalKey speedButtonKey;
 
   const PlayerControlButtons({
@@ -44,9 +52,12 @@ class PlayerControlButtons extends StatelessWidget {
     required this.onToggleDanmakuInput,
     required this.onToggleSpeedPanel,
     required this.onToggleQualityPanel,
+    required this.onSubtitleQuickTap,
+    required this.onSubtitleLongPressOpenPanel,
     required this.onToggleFullscreen,
     required this.onInteraction,
     required this.qualityButtonKey,
+    required this.subtitleButtonKey,
     required this.speedButtonKey,
   });
 
@@ -88,6 +99,54 @@ class PlayerControlButtons extends StatelessWidget {
           ),
 
         const Spacer(),
+
+        ValueListenableBuilder<List<SubtitleTrackItem>>(
+          valueListenable: logic.subtitleTracks,
+          builder: (context, tracks, _) {
+            if (tracks.isEmpty) return const SizedBox.shrink();
+            return ValueListenableBuilder<int?>(
+              valueListenable: logic.selectedSubtitleIndex,
+              builder: (context, subIdx, __) {
+                final on = subIdx != null;
+                final sz = fullscreen ? 23.0 : 21.0;
+                return Tooltip(
+                  message:
+                      on ? '关闭字幕 · 长按可切换字幕轨' : '开启字幕 · 长按可切换字幕轨',
+                  waitDuration: const Duration(milliseconds: 600),
+                  child: GestureDetector(
+                    key: subtitleButtonKey,
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () async {
+                      await onSubtitleQuickTap();
+                      onInteraction();
+                    },
+                    onLongPress: () {
+                      onSubtitleLongPressOpenPanel();
+                      onInteraction();
+                    },
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(
+                          horizontal: fullscreen ? 6 : 4, vertical: 4),
+                      child: SvgPicture.asset(
+                        on
+                            ? 'assets/player/subtitles_on.svg'
+                            : 'assets/player/subtitles_off.svg',
+                        width: sz,
+                        height: sz,
+                        colorFilter: ColorFilter.mode(
+                          on
+                              ? const Color(0xFF2196F3)
+                              : Colors.white.withValues(alpha: 0.85),
+                          BlendMode.srcIn,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        ),
 
         // 倍速选择
         TextButton(

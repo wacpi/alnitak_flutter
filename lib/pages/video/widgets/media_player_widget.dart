@@ -12,6 +12,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../../../controllers/video_player_controller.dart';
 import '../../../controllers/player_event_listener.dart';
 import '../../../controllers/danmaku_controller.dart';
+import '../../../services/player_settings_service.dart';
 import 'custom_player_ui.dart';
 
 /// 视频播放器组件
@@ -69,12 +70,14 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
   VideoPlayerController? _controller;
   bool _controllerReady = false;
   bool _isDisposed = false;
+  SubtitleViewConfiguration _subtitleConfig = const SubtitleViewConfiguration();
 
   @override
   void initState() {
     super.initState();
 
     _controller = VideoPlayerController();
+    _loadSubtitleConfig();
     _bindCallbacks();
     _setMetadata();
     _controllerReady = true;
@@ -105,6 +108,16 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
       coverUri:
           widget.coverUrl != null ? Uri.tryParse(widget.coverUrl!) : null,
     );
+  }
+
+  void _loadSubtitleConfig() {
+    PlayerSettingsService.getSubtitleConfig().then((config) {
+      if (!_isDisposed && mounted) {
+        setState(() {
+          _subtitleConfig = config;
+        });
+      }
+    });
   }
 
   void _initializePlayer() {
@@ -221,6 +234,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
                     children: [
                       Video(
                         controller: _controller!.videoController,
+                        subtitleViewConfiguration: _subtitleConfig,
                         pauseUponEnteringBackgroundMode: !bgEnabled,
                       ),
                       Positioned.fill(
