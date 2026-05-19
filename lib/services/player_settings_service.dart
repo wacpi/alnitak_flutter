@@ -117,6 +117,7 @@ class PlayerSettingsService {
             : const Color(0xaa000000),
         strokeColor: map['strokeColor'] != null ? Color(map['strokeColor'] as int) : null,
         strokeWidth: (map['strokeWidth'] as num?)?.toDouble() ?? 0.0,
+        shadow: map['shadow'] as bool? ?? false,
         fontWeight: FontWeight.values[map['fontWeightIndex'] as int? ?? 3],
       );
     } catch (_) {
@@ -137,6 +138,7 @@ class PlayerSettingsService {
       'backgroundColor': config.backgroundColor?.toARGB32(),
       'strokeColor': config.strokeColor?.toARGB32(),
       'strokeWidth': config.strokeWidth,
+      'shadow': config.shadow,
       'fontWeightIndex': FontWeight.values.indexOf(config.fontWeight),
     };
     await prefs.setString(_subtitleConfigKey, jsonEncode(map));
