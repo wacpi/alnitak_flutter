@@ -108,14 +108,22 @@ class PlayerSettingsService {
     if (raw == null || raw.isEmpty) return const SubtitleViewConfiguration();
     try {
       final map = jsonDecode(raw) as Map<String, dynamic>;
+      Color? loadedBg;
+      if (map.containsKey('backgroundColor')) {
+        loadedBg = map['backgroundColor'] != null ? Color(map['backgroundColor'] as int) : null;
+      } else {
+        loadedBg = const Color(0xaa000000);
+      }
+      Color? loadedStroke;
+      if (map.containsKey('strokeColor')) {
+        loadedStroke = map['strokeColor'] != null ? Color(map['strokeColor'] as int) : null;
+      }
       return SubtitleViewConfiguration(
         visible: map['visible'] as bool? ?? true,
         fontSize: (map['fontSize'] as num?)?.toDouble() ?? 32.0,
         fontColor: Color(map['fontColor'] as int? ?? 0xffffffff),
-        backgroundColor: map['backgroundColor'] != null
-            ? Color(map['backgroundColor'] as int)
-            : const Color(0xaa000000),
-        strokeColor: map['strokeColor'] != null ? Color(map['strokeColor'] as int) : null,
+        backgroundColor: loadedBg,
+        strokeColor: loadedStroke,
         strokeWidth: (map['strokeWidth'] as num?)?.toDouble() ?? 0.0,
         shadow: map['shadow'] as bool? ?? false,
         fontWeight: FontWeight.values[map['fontWeightIndex'] as int? ?? 3],
