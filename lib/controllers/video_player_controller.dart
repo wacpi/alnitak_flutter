@@ -1292,9 +1292,15 @@ class VideoPlayerController extends ChangeNotifier {
         return;
       }
 
+      final preferredIdx = await PlayerSettingsService.pickPreferredSubtitleTrackIndex(list);
+      if (preferredIdx < list.length) {
+        await _applySubtitleTrackItem(sessionId, list[preferredIdx], preferredIdx);
+        return;
+      }
       final def = list.indexWhere((t) => t.isDefault);
       final idx = def >= 0 ? def : 0;
       await _applySubtitleTrackItem(sessionId, list[idx], idx);
+      return;
     } catch (e) {
       _logger.logWarning('字幕列表加载失败: $e');
       if (!_isSessionActive(sessionId)) return;
