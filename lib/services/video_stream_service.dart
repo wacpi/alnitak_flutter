@@ -6,6 +6,7 @@ import '../config/api_config.dart';
 import '../models/data_source.dart';
 import '../models/dash_models.dart';
 import '../utils/quality_utils.dart';
+import '../utils/network_line_selector.dart';
 
 /// 视频流服务 — MPD / JSON DASH / m3u8 加载
 ///
@@ -21,6 +22,10 @@ class VideoStreamService {
   VideoStreamService._internal();
 
   final Dio _dio = HttpClient().dio;
+
+  /// 当前线路是否为备用 OSS
+  bool get _useBackupOss =>
+      NetworkLineSelector().selectedLine == NetworkLine.backup;
 
   /// 播放器 HTTP 请求头
   static Map<String, String> get defaultHttpHeaders => {
@@ -45,6 +50,7 @@ class VideoStreamService {
         queryParameters: {
           'resourceId': resourceId,
           'format': 'dash-unified',
+          if (_useBackupOss) 'backup': 'true',
         },
         options: Options(responseType: ResponseType.plain),
       );
@@ -107,8 +113,9 @@ class VideoStreamService {
 
   /// 构造 m3u8 URL 给 mpv 直接加载
   Future<DataSource> getM3u8DataSource(Object resourceId, String quality) async {
+    final backup = _useBackupOss ? '&backup=true' : '';
     final url = '${ApiConfig.baseUrl}/api/v1/video/getVideoFile'
-        '?resourceId=$resourceId&quality=$quality&format=m3u8';
+        '?resourceId=$resourceId&quality=$quality&format=m3u8$backup';
     return DataSource(videoSource: url, httpHeaders: defaultHttpHeaders);
   }
 
@@ -123,6 +130,7 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
         'resourceId': resourceId,
         'quality': quality,
         'format': 'json',
+        if (_useBackupOss) 'backup': 'true',
       },
     );
     return _parseJsonStream(response.data, quality);

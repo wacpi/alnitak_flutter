@@ -16,6 +16,7 @@ import 'config/api_config.dart';
 import 'utils/http_client.dart';
 import 'utils/token_manager.dart';
 import 'utils/auth_state_manager.dart';
+import 'utils/network_line_selector.dart';
 import 'widgets/error_boundary.dart';
 
 /// 全局 AudioService handler，供 VideoPlayerController 使用
@@ -55,6 +56,10 @@ Future<void> _init() async {
   await AuthStateManager().initialize();
   await PlayerSettingsService.initialize();
   await ScreenUtil.ensureScreenSize();
+
+  // 应用启动时检测网络线路，为整个会话选择最优 OSS
+  NetworkLineSelector().check();
+
   if (kDebugMode) {
     LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');
   }
