@@ -351,6 +351,13 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
                     child: Container(color: Colors.transparent),
                   ),
 
+                  // 1.5 亮度遮罩（半透明黑层，仅视频区域，不阻挡手势）
+                  IgnorePointer(
+                    child: Container(
+                      color: Colors.black.withValues(alpha: 1.0 - playerBrightness),
+                    ),
+                  ),
+
                   // 2. 锁定按钮
                   if (_isLocked && !_showControls)
                     Align(

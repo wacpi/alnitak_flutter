@@ -26,6 +26,25 @@ class SubtitleTrackItem {
     );
   }
 
-  /// 播放器 UI：展示名
-  String get displayLabel => label.isNotEmpty ? label : lang;
+  /// 语言代码→显示名映射表（对齐 web LANG_CODE_TO_LABEL）
+  static const Map<String, String> langCodeToLabel = {
+    'zh-Hans': '简体中文',
+    'zh-Hant': '繁體中文',
+    'en': 'English',
+    'ja': '日本語',
+    'ko': '한국어',
+    'vi': 'Tiếng Việt',
+    'th': 'ภาษาไทย',
+    'ms': 'Bahasa Melayu',
+    'id': 'Bahasa Indonesia',
+    'es': 'Español',
+    'pt': 'Português',
+    'ru': 'Русский',
+  };
+
+  /// 播放器 UI：展示名。优先用 label，否则查映射表，最后回退 lang 代码。
+  String get displayLabel {
+    if (label.isNotEmpty) return label;
+    return langCodeToLabel[lang] ?? lang;
+  }
 }
