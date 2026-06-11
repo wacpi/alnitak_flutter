@@ -4,6 +4,7 @@ import '../../models/comment.dart';
 import '../../models/danmaku.dart';
 import '../../services/video_service.dart';
 import '../../services/history_service.dart';
+import '../../services/video_stream_service.dart';
 import '../../services/cache_service.dart';
 import '../../services/logger_service.dart';
 import '../../services/online_websocket_service.dart';
@@ -167,6 +168,15 @@ void init(String videoRef, {int? initialPart}) {
         '视频数据加载成功',
         {'vid': detail.vid, 'title': detail.title, 'part': currentPart, 'author': detail.author.name},
       );
+
+      // 预拉首个分P 的 manifest，与进度请求并行执行
+      if (detail.resources.isNotEmpty) {
+        final idx = (part ?? 1) - 1;
+        if (idx >= 0 && idx < detail.resources.length) {
+          final r = detail.resources[idx];
+          VideoStreamService().getDashManifest(r.shortId ?? r.id);
+        }
+      }
 
       _fetchProgressAndRestore(
           part: part,

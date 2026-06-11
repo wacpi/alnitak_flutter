@@ -6,6 +6,7 @@ class SubtitleTrackItem {
   final String lang;
   final String label;
   final String url;
+  final String? backupUrl;
   final bool isDefault;
 
   const SubtitleTrackItem({
@@ -13,6 +14,7 @@ class SubtitleTrackItem {
     required this.lang,
     required this.label,
     required this.url,
+    this.backupUrl,
     required this.isDefault,
   });
 
@@ -22,6 +24,7 @@ class SubtitleTrackItem {
       lang: jsonAsString(json['lang']),
       label: jsonAsString(json['label']),
       url: jsonAsString(json['url']),
+      backupUrl: jsonAsStringOrNull(json['backupUrl']),
       isDefault: json['isDefault'] == true || json['is_default'] == true,
     );
   }

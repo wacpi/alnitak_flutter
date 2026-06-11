@@ -31,6 +31,7 @@ import '../models/loop_mode.dart';
 import '../utils/wakelock_manager.dart';
 import '../utils/error_handler.dart';
 import '../utils/quality_utils.dart';
+import '../utils/network_line_selector.dart';
 import '../main.dart' show audioHandler;
 import 'player_event_listener.dart';
 
@@ -1144,6 +1145,15 @@ class VideoPlayerController extends ChangeNotifier {
       try {
         final currentPos = _player!.state.position;
         if (currentPos <= Duration.zero) return;
+
+        // 先上报故障并强制切换线路（视频卡顿优先换线恢复，而非死磕当前线路）
+        final line = NetworkLineSelector().selectedLine;
+        if (line != null) {
+          _playbackLog('_handleStalled 上报 $line 故障 + 强制切换线路');
+          NetworkLineSelector().reportLineFailure(line);
+          NetworkLineSelector().forceSwitchLine();
+        }
+
         _playbackLog('_handleStalled reload quality=${currentQuality.value} pos=${currentPos.inSeconds}s');
         await _reloadWithDataSource(currentQuality.value!, currentPos);
         _userIntendedPosition = currentPos;
@@ -1320,7 +1330,34 @@ class VideoPlayerController extends ChangeNotifier {
   }) async {
     if (!_isSessionActive(sessionId) || _player == null) return;
     try {
-      final text = await SubtitleApiService.fetchVttPlain(item.url);
+      // 根据网络线路决定首次尝试的 URL，失败后自动降级到另一条（多 OSS 容灾）
+      final line = NetworkLineSelector().selectedLine;
+      final candidates = <String>[];
+      if (line == NetworkLine.backup && item.backupUrl != null) {
+        candidates.add(item.backupUrl!);
+        candidates.add(item.url);
+      } else {
+        candidates.add(item.url);
+        if (item.backupUrl != null) candidates.add(item.backupUrl!);
+      }
+      String? text;
+      for (final url in candidates) {
+        try {
+          text = await SubtitleApiService.fetchVttPlain(url);
+          break;
+        } catch (e) {
+          _logger.logWarning('字幕线路降级: lang=${item.lang} url=$url err=$e');
+        }
+      }
+      if (text == null) {
+        _logger.logWarning('字幕所有线路均失败: lang=${item.lang}');
+        // 上报当前线路故障，触发重探
+        final currentLine = NetworkLineSelector().selectedLine;
+        if (currentLine != null) {
+          NetworkLineSelector().reportLineFailure(currentLine);
+        }
+        return;
+      }
       if (!_isSessionActive(sessionId) || _player == null) return;
       try {
         _player!.setProperty('sub-visibility', 'no');

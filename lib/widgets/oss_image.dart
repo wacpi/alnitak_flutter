@@ -94,23 +94,34 @@ class _OssImageState extends State<OssImage> {
   }
 
   void _onLoadError() {
-    if (_triedFallback) return;
-    _triedFallback = true;
+    final selector = NetworkLineSelector();
 
-    final primary = _primaryUrl;
-    final backup = _backupUrl;
-    if (primary == null) return;
+    if (!_triedFallback) {
+      _triedFallback = true;
 
-    // 切换到另一条线路
-    if (_currentUrl == primary && backup != null) {
-      _currentUrl = backup;
-    } else if (_currentUrl != primary) {
-      _currentUrl = primary;
-    } else {
-      return; // 没有可用的回退
+      final primary = _primaryUrl;
+      final backup = _backupUrl;
+      if (primary == null) return;
+
+      // 切换到另一条线路
+      if (_currentUrl == primary && backup != null) {
+        _currentUrl = backup;
+      } else if (_currentUrl != primary) {
+        _currentUrl = primary;
+      } else {
+        return; // 没有可用的回退
+      }
+
+      if (mounted) setState(() {});
+      return;
     }
 
-    if (mounted) setState(() {});
+    // 两条线路都已尝试过且均失败 → 上报当前线路故障
+    final line = NetworkLineSelector().selectedLine;
+    if (line != null) {
+      debugPrint('[OssImage] 主备线路均失败，上报 $line 故障');
+      selector.reportLineFailure(line);
+    }
   }
 
   Widget _buildPlaceholder(BuildContext context) {

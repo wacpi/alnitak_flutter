@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 
+import '../config/api_config.dart';
 import '../models/subtitle_track_item.dart';
 import '../utils/http_client.dart';
 
@@ -50,12 +51,13 @@ class SubtitleApiService {
         .toList();
   }
 
-  /// 拉取远端 VTT/SRT 文本（通常为 OSS 签名 URL）。
+  /// 拉取远端 VTT/SRT 文本（后端代理路径或 OSS 直链）。
   static Future<String> fetchVttPlain(String url) async {
     final u = url.trim();
     if (u.isEmpty) throw Exception('字幕地址为空');
 
-    final res = await _plainDio.get<String>(u);
+    final fullUrl = u.startsWith('http') ? u : '${ApiConfig.baseUrl}$u';
+    final res = await _plainDio.get<String>(fullUrl);
     final body = res.data;
     if (body == null || body.isEmpty) {
       throw Exception('字幕文件为空');

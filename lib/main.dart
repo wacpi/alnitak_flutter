@@ -58,7 +58,8 @@ Future<void> _init() async {
   await ScreenUtil.ensureScreenSize();
 
   // 应用启动时检测网络线路，为整个会话选择最优 OSS
-  NetworkLineSelector().check();
+  // 等最多 3s，保证 OssImage / 视频流首次请求时线路已确定
+  await NetworkLineSelector().ensureCheckedWithTimeout(timeout: const Duration(seconds: 3));
 
   if (kDebugMode) {
     LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');

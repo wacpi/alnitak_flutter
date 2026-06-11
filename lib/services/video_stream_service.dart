@@ -23,9 +23,17 @@ class VideoStreamService {
 
   final Dio _dio = HttpClient().dio;
 
+  /// Manifest 请求缓存（去重+预拉）：key = "resourceId_b/p", value = in-flight future
+  /// 生命周期：单页面会话内有效，页面切换后随旧的 manifest Future 自然回收
+  final Map<String, Future<DashManifest>> _manifestCache = {};
+
   /// 当前线路是否为备用 OSS
   bool get _useBackupOss =>
       NetworkLineSelector().selectedLine == NetworkLine.backup;
+
+  /// 确保线路已检测（幂等），视频首次请求时 OSS 线路已确定
+  Future<void> _ensureLineChecked() =>
+      NetworkLineSelector().ensureCheckedWithTimeout();
 
   /// 播放器 HTTP 请求头
   static Map<String, String> get defaultHttpHeaders => {
@@ -39,10 +47,21 @@ class VideoStreamService {
   //  DASH（新资源主路径）
   // ──────────────────────────────────────────────
 
-/// 获取完整 DASH manifest（一次请求所有清晰度）
+  /// 获取完整 DASH manifest（带缓存去重）
   ///
-/// 采用 MPD 优先策略（单次请求），失败时回退 JSON（1+N 请求），再失败回退 m3u8。
+  /// 同一 resourceId 的并发/重复请求共享同一个 in-flight future，
+  /// 配合 [VideoPageController] 的预拉机制消除播放器初始化时的网络等待。
+  ///
+  /// 缓存 key 包含线路标识（primary/backup），线路切换后自动失效。
   Future<DashManifest> getDashManifest(Object resourceId) async {
+    await _ensureLineChecked();
+    final key = '${resourceId}_${_useBackupOss ? 'b' : 'p'}';
+    _manifestCache[key] ??= _fetchDashManifest(resourceId);
+    return _manifestCache[key]!;
+  }
+
+  /// 实际的 manifest 请求逻辑（MPD → JSON → m3u8 三级回退）
+  Future<DashManifest> _fetchDashManifest(Object resourceId) async {
     // 1) MPD 优先（单次请求返回所有清晰度）
     try {
       final response = await _dio.get(
@@ -113,6 +132,7 @@ class VideoStreamService {
 
   /// 构造 m3u8 URL 给 mpv 直接加载
   Future<DataSource> getM3u8DataSource(Object resourceId, String quality) async {
+    await _ensureLineChecked();
     final backup = _useBackupOss ? '&backup=true' : '';
     final url = '${ApiConfig.baseUrl}/api/v1/video/getVideoFile'
         '?resourceId=$resourceId&quality=$quality&format=m3u8$backup';
