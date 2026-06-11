@@ -39,27 +39,37 @@ void main() {
 
 Future<void> _init() async {
   MediaKit.ensureInitialized();
-  // 不在 main 预配置 AudioSession，避免与 Controller 内 configure 重复导致电话中断后状态异常
-  audioHandler = await AudioService.init(
-    builder: () => VideoAudioHandler(),
-    config: const AudioServiceConfig(
-      androidNotificationChannelId: 'com.example.alnitak_flutter.audio',
-      androidNotificationChannelName: '视频播放',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
-    ),
-  );
-  await ThemeService().init();
-  await ApiConfig.init();
-  await TokenManager().initialize();
-  await HttpClient().init();
-  await AuthStateManager().initialize();
-  await PlayerSettingsService.initialize();
-  await ScreenUtil.ensureScreenSize();
 
-  // 应用启动时检测网络线路，为整个会话选择最优 OSS
-  // 等最多 3s，保证 OssImage / 视频流首次请求时线路已确定
-  await NetworkLineSelector().ensureCheckedWithTimeout(timeout: const Duration(seconds: 3));
+  // 并行初始化互不依赖的模块（ThemeService、ApiConfig、TokenManager 等均只需读 SharedPrefs）
+  // 注意：AudioService.init 须提前完成以便 audioHandler 就绪；HttpClient.init 依赖 ApiConfig.init，
+  // 但 HttpClient 构造时已使用 ApiConfig 静态默认值，init() 只需在后台校正 baseUrl。
+  // 不在 main 预配置 AudioSession，避免与 Controller 内 configure 重复导致电话中断后状态异常
+  await Future.wait([
+    AudioService.init(
+      builder: () => VideoAudioHandler(),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'com.example.alnitak_flutter.audio',
+        androidNotificationChannelName: '视频播放',
+        androidNotificationOngoing: true,
+        androidStopForegroundOnPause: true,
+      ),
+    ).then((handler) => audioHandler = handler),
+    ThemeService().init(),
+    ApiConfig.init(),
+    TokenManager().initialize(),
+    AuthStateManager().initialize(),
+    PlayerSettingsService.initialize(),
+    ScreenUtil.ensureScreenSize(),
+  ]);
+
+  // 必须在 ApiConfig.init 之后校正 Dio baseUrl
+  await HttpClient().init();
+
+  // 网络线路探针移到后台执行，不阻塞首帧渲染（之前 blocking 最长 3s）。
+  // 组件在探针完成前默认走主线路，probe 完成后自动更新。
+  NetworkLineSelector().ensureChecked().then((_) {
+    NetworkLineSelector().startPeriodicRecheck();
+  });
 
   if (kDebugMode) {
     LoggerService.instance.logInfo('API 基础地址: ${ApiConfig.baseUrl}', tag: 'App');
