@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
 
@@ -16,10 +17,13 @@ class TokenManager extends ChangeNotifier {
   factory TokenManager() => _instance;
   TokenManager._internal();
 
-  // 存储键（使用混淆后的键名）
+  // 存储键（使用混淆后的键名，但对 flutter_secure_storage 属于附加层）
   static const String _tokenKey = '_tk_auth_v2';
   static const String _refreshTokenKey = '_tk_refresh_v2';
   static const String _checksumKey = '_tk_checksum';
+
+  /// Android 默认使用 EncryptedSharedPreferences，iOS 使用 Keychain
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
   // 内存缓存（仅在运行时有效）
   String? _cachedToken;
@@ -72,12 +76,10 @@ class TokenManager extends ChangeNotifier {
     if (_isInitialized) return;
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      // 读取并解码 Token
-      final encodedToken = prefs.getString(_tokenKey);
-      final encodedRefresh = prefs.getString(_refreshTokenKey);
-      final storedChecksum = prefs.getString(_checksumKey);
+      // 1) 尝试从安全存储读取
+      final encodedToken = await _secureStorage.read(key: _tokenKey);
+      final encodedRefresh = await _secureStorage.read(key: _refreshTokenKey);
+      final storedChecksum = await _secureStorage.read(key: _checksumKey);
 
       if (encodedToken != null && storedChecksum != null) {
         // 验证完整性
@@ -88,13 +90,13 @@ class TokenManager extends ChangeNotifier {
         } else {
           // 校验失败，可能被篡改，清除
           _logSafe('Token 完整性校验失败，已清除');
-          await _clearStorage(prefs);
+          await _clearStorage();
         }
       }
 
-      // 尝试从旧版存储迁移
+      // 2) 安全存储无数据 → 尝试从 SharedPreferences 迁移
       if (_cachedToken == null) {
-        await _migrateFromOldStorage(prefs);
+        await _migrateFromOldStorage();
       }
 
       _isInitialized = true;
@@ -106,24 +108,38 @@ class TokenManager extends ChangeNotifier {
     }
   }
 
-  /// 从旧版存储迁移
-  Future<void> _migrateFromOldStorage(SharedPreferences prefs) async {
+  /// 从 SharedPreferences（旧存储）迁移到 FlutterSecureStorage
+  Future<void> _migrateFromOldStorage() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // 尝试新版 SharedPreferences 格式（先迁移后清除）
+      final spToken = prefs.getString(_tokenKey);
+      final spRefresh = prefs.getString(_refreshTokenKey);
+      final spChecksum = prefs.getString(_checksumKey);
+      if (spToken != null && spChecksum != null) {
+        _logSafe('检测到 SharedPreferences 中的 Token，正在迁移到安全存储...');
+        _cachedToken = _decode(spToken);
+        _cachedRefreshToken = spRefresh != null ? _decode(spRefresh) : null;
+        await _saveToStorage();
+        // 清除 SharedPreferences 旧数据
+        await prefs.remove(_tokenKey);
+        await prefs.remove(_refreshTokenKey);
+        await prefs.remove(_checksumKey);
+        _logSafe('Token 迁移完成');
+        return;
+      }
+
+      // 尝试更早的旧版键名
       final oldToken = prefs.getString('auth_token');
       final oldRefreshToken = prefs.getString('refresh_token');
-
       if (oldToken != null && oldToken.isNotEmpty) {
         _logSafe('检测到旧版 Token，正在迁移...');
-
-        // 保存到新格式
         _cachedToken = oldToken;
         _cachedRefreshToken = oldRefreshToken;
-        await _saveToStorage(prefs);
-
-        // 删除旧版存储
+        await _saveToStorage();
         await prefs.remove('auth_token');
         await prefs.remove('refresh_token');
-
         _logSafe('Token 迁移完成');
       }
     } catch (e) {
@@ -144,9 +160,8 @@ class TokenManager extends ChangeNotifier {
       // 【新增】登录成功，重置刷新失败状态
       resetRefreshFailedState();
 
-      // 保存到存储
-      final prefs = await SharedPreferences.getInstance();
-      await _saveToStorage(prefs);
+      // 保存到安全存储
+      await _saveToStorage();
 
       _logSafe('Token 已保存');
       notifyListeners();
@@ -164,8 +179,7 @@ class TokenManager extends ChangeNotifier {
         _cachedRefreshToken = refreshToken;
       }
 
-      final prefs = await SharedPreferences.getInstance();
-      await _saveToStorage(prefs);
+      await _saveToStorage();
 
       _logSafe('Token 已更新');
       notifyListeners();
@@ -180,8 +194,7 @@ class TokenManager extends ChangeNotifier {
       _cachedToken = null;
       _cachedRefreshToken = null;
 
-      final prefs = await SharedPreferences.getInstance();
-      await _clearStorage(prefs);
+      await _clearStorage();
 
       _logSafe('Token 已清除');
       notifyListeners();
@@ -242,25 +255,33 @@ class TokenManager extends ChangeNotifier {
 
   // ========== 私有方法 ==========
 
-  /// 保存到存储
-  Future<void> _saveToStorage(SharedPreferences prefs) async {
+  /// 保存到安全存储
+  Future<void> _saveToStorage() async {
     final encodedToken = _encode(_cachedToken ?? '');
     final encodedRefresh = _encode(_cachedRefreshToken ?? '');
     final checksum = _generateChecksum(encodedToken, encodedRefresh);
 
-    await prefs.setString(_tokenKey, encodedToken);
-    await prefs.setString(_refreshTokenKey, encodedRefresh);
-    await prefs.setString(_checksumKey, checksum);
+    await _secureStorage.write(key: _tokenKey, value: encodedToken);
+    await _secureStorage.write(key: _refreshTokenKey, value: encodedRefresh);
+    await _secureStorage.write(key: _checksumKey, value: checksum);
   }
 
-  /// 清除存储
-  Future<void> _clearStorage(SharedPreferences prefs) async {
-    await prefs.remove(_tokenKey);
-    await prefs.remove(_refreshTokenKey);
-    await prefs.remove(_checksumKey);
-    // 同时清除旧版存储
-    await prefs.remove('auth_token');
-    await prefs.remove('refresh_token');
+  /// 清除安全存储 + 旧版 SharedPreferences（兜底清理）
+  Future<void> _clearStorage() async {
+    await _secureStorage.delete(key: _tokenKey);
+    await _secureStorage.delete(key: _refreshTokenKey);
+    await _secureStorage.delete(key: _checksumKey);
+    // 同时清除 SharedPreferences 遗留数据（迁移残留兜底）
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_tokenKey);
+      await prefs.remove(_refreshTokenKey);
+      await prefs.remove(_checksumKey);
+      await prefs.remove('auth_token');
+      await prefs.remove('refresh_token');
+    } catch (_) {
+      // SharedPreferences 清理失败不影响安全存储
+    }
   }
 
   /// 编码（Base64 + 简单混淆）
