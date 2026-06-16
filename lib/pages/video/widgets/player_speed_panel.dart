@@ -23,7 +23,7 @@ class PlayerSpeedPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Positioned(
-      right: right - 12, // 向右偏移，与原逻辑一致
+      right: right, // 居中于触发按钮
       bottom: bottom,
       child: GestureDetector(
         onTap: () {}, // 拦截点击穿透
