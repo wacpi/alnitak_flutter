@@ -289,9 +289,11 @@ class TokenManager extends ChangeNotifier {
     return sha256.convert(utf8.encode(data)).toString().substring(0, 16);
   }
 
-  /// 安全日志（不打印敏感信息）
+  /// 安全日志（不打印 Token 明文本身）
   void _logSafe(String message) {
     if (kDebugMode) {
+      // ignore: avoid_print
+      debugPrint('[TokenManager] $message');
     }
   }
 

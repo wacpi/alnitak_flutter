@@ -162,7 +162,7 @@ class VideoPlayerController extends ChangeNotifier {
   final StreamController<Duration> _positionStreamController = StreamController.broadcast();
   Stream<Duration> get positionStream => _positionStreamController.stream;
 
-  List<StreamSubscription> _subscriptions =[];
+  List<StreamSubscription> _subscriptions = [];
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   StreamSubscription? _interruptionSubscription;
   StreamSubscription? _becomingNoisySubscription;
@@ -872,7 +872,7 @@ class VideoPlayerController extends ChangeNotifier {
     for (final s in _subscriptions) {
       s.cancel();
     }
-    _subscriptions =[];
+    _subscriptions = [];
     _listenersStarted = false;
     _stalledTimer?.cancel();
     _stalledTimer = null;
@@ -1131,7 +1131,9 @@ class VideoPlayerController extends ChangeNotifier {
       try {
         await _videoController!.waitUntilFirstFrameRendered
             .timeout(const Duration(milliseconds: 1200));
-      } catch (_) {}
+      } catch (_) {
+        // 首帧渲染超时是正常情况（软解/慢速网络），无须处理
+      }
     }
   }
 
@@ -1318,7 +1320,9 @@ class VideoPlayerController extends ChangeNotifier {
       selectedSubtitleIndex.value = null;
       try {
         await _player?.setSubtitleTrack(SubtitleTrack.no());
-      } catch (_) {/* noop */}
+      } catch (_) {
+        // 字幕关闭失败不阻塞主流程
+      }
     }
   }
 
@@ -1360,12 +1364,15 @@ class VideoPlayerController extends ChangeNotifier {
       }
       if (!_isSessionActive(sessionId) || _player == null) return;
       try {
+        // 已在 _configurePlayerOnce 设置默认值，但确保 mpv 不干扰 Flutter SubtitleView
         _player!.setProperty('sub-visibility', 'no');
         _player!.setProperty('sub-ass', 'no');
         _player!.setProperty('sub-border-style', 'outline-and-shadow');
         _player!.setProperty('sub-back-color', '#00000000');
         _player!.setProperty('sub-shadow-offset', '0');
-      } catch (_) {}
+      } catch (_) {
+        // mpv 编译选项可能裁剪这些属性，静默忽略
+      }
       await _player!.setSubtitleTrack(
         SubtitleTrack.data(
           text,
@@ -1373,13 +1380,12 @@ class VideoPlayerController extends ChangeNotifier {
           language: item.lang,
         ),
       );
+      // sub-visibility 必须在此之后再次设为 no，因为 setSubtitleTrack 可能重新启用
       try {
         _player!.setProperty('sub-visibility', 'no');
-        _player!.setProperty('sub-ass', 'no');
-        _player!.setProperty('sub-border-style', 'outline-and-shadow');
-        _player!.setProperty('sub-back-color', '#00000000');
-        _player!.setProperty('sub-shadow-offset', '0');
-      } catch (_) {}
+      } catch (_) {
+        // mpv 编译选项可能裁剪此属性，静默忽略
+      }
       if (_isSessionActive(sessionId)) {
         selectedSubtitleIndex.value = index;
         if (persistPreference) {
@@ -1434,45 +1440,44 @@ class VideoPlayerController extends ChangeNotifier {
   // 12. 释放资源 Dispose
   // ===========================================================================
 
-  Future<void> _disposeAudioSession() async {
+  void _disposeAudioSession() {
     try {
-      await _audioSession?.setActive(false);
-    } catch (e) {
-      _logger.logDebug('释放音频焦点失败: $e');
+      unawaited(_audioSession?.setActive(false));
+    } catch (_) {
+      // 释放音频焦点失败不阻塞 dispose
     }
-    await _interruptionSubscription?.cancel();
-    await _becomingNoisySubscription?.cancel();
+    unawaited(_interruptionSubscription?.cancel());
+    unawaited(_becomingNoisySubscription?.cancel());
     _interruptionSubscription = null;
     _becomingNoisySubscription = null;
     _audioSession = null;
   }
 
-  @override
-  Future<void> dispose() async {
-    if (_isDisposed) return;
-    _isDisposing = true;
-    _isDisposed = true;
-
+  Future<void> _disposeAsync() async {
     WakelockManager.disable();
-    await _disposeAudioSession();
-
-    eventListener = null;
-    removeListeners();
-    await _connectivitySubscription?.cancel();
-    _connectivitySubscription = null;
-
+    _disposeAudioSession();
     await audioHandler.stopIfOwner(_audioOwnerId);
     audioHandler.detachPlayerIfOwner(_audioOwnerId);
-
-    _manifest = null;
-    _cacheService.cleanupAllTempCache();
-
     if (_player != null) {
       await _player!.dispose();
       _player = null;
     }
-
     _positionStreamController.close();
+  }
+
+  @override
+  void dispose() {
+    if (_isDisposed) return;
+    _isDisposing = true;
+    _isDisposed = true;
+
+    eventListener = null;
+    removeListeners();
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = null;
+
+    _manifest = null;
+    _cacheService.cleanupAllTempCache();
 
     availableQualities.dispose();
     currentQuality.dispose();
@@ -1490,6 +1495,8 @@ class VideoPlayerController extends ChangeNotifier {
     isSliderMoving.dispose();
     subtitleTracks.dispose();
     selectedSubtitleIndex.dispose();
+
+    unawaited(_disposeAsync());
 
     super.dispose();
   }

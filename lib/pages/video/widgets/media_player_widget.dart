@@ -4,8 +4,6 @@
 /// - VideoPlayerController 初始化
 /// - 构建视频渲染 UI
 library;
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -171,10 +169,7 @@ class _MediaPlayerWidgetState extends State<MediaPlayerWidget>
     PlayerSettingsService.subtitleConfigNotifier.removeListener(_onSubtitleConfigChanged);
     WidgetsBinding.instance.removeObserver(this);
 
-    final controller = _controller;
-    if (controller != null) {
-      unawaited(controller.dispose());
-    }
+    _controller?.dispose();
     _controller = null;
 
     SystemChrome.setPreferredOrientations(

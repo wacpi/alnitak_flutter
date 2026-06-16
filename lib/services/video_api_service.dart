@@ -7,7 +7,7 @@ class VideoApiService {
   static final Dio _dio = HttpClient().dio;
   static const int pageSize = 10;
 
-  static Future<List<VideoApiModel>> asyncGetHotVideoAPI({
+  static Future<List<VideoApiModel>> getHotVideoAPI({
     int page = 1,
     int pageSize = VideoApiService.pageSize,
   }) async {
@@ -24,24 +24,13 @@ class VideoApiService {
     }
   }
 
-  static Future<List<VideoApiModel>> getHotVideoAPI({
-    int page = 1,
-    int pageSize = VideoApiService.pageSize,
-  }) async {
-    return await asyncGetHotVideoAPI(page: page, pageSize: pageSize);
-  }
-
   static Future<List<VideoApiModel>> getVideoByPartition({
     required int partitionId,
     int page = 1,
     int pageSize = VideoApiService.pageSize,
   }) async {
     if (partitionId == 0) {
-      return asyncGetHotVideoAPI(page: page, pageSize: pageSize);
-    }
-
-    if (page > 1) {
-      return [];
+      return getHotVideoAPI(page: page, pageSize: pageSize);
     }
 
     final response = await _dio.get(

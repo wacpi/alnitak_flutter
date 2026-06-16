@@ -22,6 +22,8 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<Duration>? _durationSubscription;
   StreamSubscription<Duration>? _bufferSubscription;
+  DateTime _lastPositionUpdate = DateTime(2000);
+  static const Duration _positionThrottleInterval = Duration(seconds: 1);
 
   VideoAudioHandler() {
     _initPlaybackState();
@@ -88,7 +90,11 @@ class VideoAudioHandler extends BaseAudioHandler with SeekHandler {
     });
 
     _positionSubscription = _player!.stream.position.listen((position) {
-      _updatePosition(position);
+      final now = DateTime.now();
+      if (now.difference(_lastPositionUpdate) >= _positionThrottleInterval) {
+        _lastPositionUpdate = now;
+        _updatePosition(position);
+      }
     });
 
     _durationSubscription = _player!.stream.duration.listen((duration) {

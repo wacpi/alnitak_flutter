@@ -34,7 +34,9 @@ class LoggerService {
           await _archiveOldLogs();
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      // 日志初始化失败不影响应用启动
+    }
   }
 
   /// 归档旧日志
@@ -55,12 +57,23 @@ class LoggerService {
       // 移动旧日志
       await _logFile!.copy(archiveFile.path);
       await _logFile!.delete();
-    } catch (_) {}
+    } catch (_) {
+      // 日志归档失败不阻塞应用
+    }
   }
 
   static const int _maxReportLength = 2000;
 
+  // 日志上报节流：5 秒内只发一条，避免错误风暴时 HTTP 堵塞
+  DateTime _lastReportedAt = DateTime(2000);
+  static const Duration _reportThrottleInterval = Duration(seconds: 5);
+
   void _reportToServer(Map<String, dynamic> payload) {
+    // Release 模式下也节流，避免后台重复报错
+    final now = DateTime.now();
+    if (now.difference(_lastReportedAt) < _reportThrottleInterval) return;
+    _lastReportedAt = now;
+
     Future.microtask(() async {
       try {
         final body = <String, dynamic>{
@@ -118,7 +131,9 @@ class LoggerService {
       
       // 追加写入文件
       await _logFile!.writeAsString(logEntry, mode: FileMode.append);
-    } catch (_) {}
+    } catch (_) {
+      // 日志写文件失败不阻塞主流程
+    }
   }
 
   /// 记录错误日志
