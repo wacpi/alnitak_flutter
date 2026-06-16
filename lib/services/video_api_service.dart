@@ -35,7 +35,7 @@ class VideoApiService {
 
     final response = await _dio.get(
       '/api/v1/video/getVideoListByPartition',
-      queryParameters: {'partitionId': partitionId, 'size': pageSize},
+      queryParameters: {'partitionId': partitionId, 'page': page, 'size': pageSize},
     );
 
     final apiResponse = ApiResponse.fromJson(response.data as Map<String, dynamic>);

@@ -581,7 +581,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                 ),
               // 内容区域
-              if (_contentType == 0)
+              if (_contentType == 0 && _videos.isEmpty && !_isLoadingVideos)
+                // 视频列表为空时的占位
+                SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.videocam_off_outlined,
+                            size: 64.sp, color: colors.iconSecondary),
+                        SizedBox(height: 16.h),
+                        Text('暂无视频', style: TextStyle(
+                            fontSize: 16.sp, color: colors.textSecondary)),
+                        SizedBox(height: 8.h),
+                        Text('换个分区看看吧',
+                            style: TextStyle(
+                                fontSize: 14.sp, color: colors.textTertiary)),
+                      ],
+                    ),
+                  ),
+                )
+              else if (_contentType == 0)
                 // 视频网格（参考 pili_plus: SliverGrid + ExtentAndRatio）
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
