@@ -253,7 +253,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
     final buttonBottomToScreenBottom = overlaySize.height - (buttonGlobalPos.dy + buttonBox.size.height);
 
     setState(() {
-      _panelRight = (distFromRight + (76 - buttonBox.size.width) / 2).clamp(0.0, overlaySize.width - 76);
+      _panelRight = (distFromRight + (buttonBox.size.width - 76) / 2).clamp(0.0, overlaySize.width - 76);
       _panelBottom = buttonBottomToScreenBottom + (isFull ? 30.0 : 55.0);
       _showQualityPanel = true;
       _showSubtitlePanel = false;
@@ -284,7 +284,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
         overlaySize.height - (buttonGlobalPos.dy + buttonBox.size.height);
 
     setState(() {
-      _subtitlePanelRight = (distFromRight + (100 - buttonBox.size.width) / 2).clamp(0.0, overlaySize.width - 100);
+      _subtitlePanelRight = (distFromRight + (buttonBox.size.width - 100) / 2).clamp(0.0, overlaySize.width - 100);
       _subtitlePanelBottom = buttonBottomToScreenBottom + (isFull ? 30.0 : 55.0);
       _showSubtitlePanel = true;
       _showQualityPanel = false;
@@ -857,7 +857,7 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
       final buttonBox = _speedButtonKey.currentContext?.findRenderObject() as RenderBox?;
       if (buttonBox != null) {
         final distFromRight = _calcPanelRight(_speedButtonKey) ?? 0;
-        _speedPanelRight = (distFromRight + (64 - buttonBox.size.width) / 2).clamp(0.0, 300.0);
+        _speedPanelRight = (distFromRight + (buttonBox.size.width - 64) / 2).clamp(0.0, 300.0);
       } else {
         _speedPanelRight = null;
       }
