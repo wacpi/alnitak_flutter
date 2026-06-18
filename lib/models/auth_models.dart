@@ -94,7 +94,25 @@ class EmailLoginRequest {
   }
 }
 
-/// 修改密码请求
+/// 修改密码请求（已登录用户，需旧密码）
+class ChangePasswordRequest {
+  final String oldPassword;
+  final String newPassword;
+
+  ChangePasswordRequest({
+    required this.oldPassword,
+    required this.newPassword,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'oldPassword': oldPassword,
+      'newPassword': newPassword,
+    };
+  }
+}
+
+/// 重置密码请求（忘记密码场景，需邮箱验证码）
 class ModifyPasswordRequest {
   final String email;
   final String password;

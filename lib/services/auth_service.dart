@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import '../utils/http_client.dart';
 import '../utils/token_manager.dart';
 import '../models/auth_models.dart';
+import '../utils/error_handler.dart';
 import 'logger_service.dart';
 
 /// 需要人机验证异常（登录用）
@@ -214,7 +215,33 @@ class AuthService {
     }
   }
 
-  /// 修改密码
+  /// 修改密码（已登录用户，需校验旧密码）
+  /// 改密后服务端会清除所有 refreshToken，需重新登录
+  Future<({bool success, String message})> changePassword({
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    try {
+      final response = await _httpClient.dio.post(
+        '/api/v1/auth/changePassword',
+        data: ChangePasswordRequest(
+          oldPassword: oldPassword,
+          newPassword: newPassword,
+        ).toJson(),
+      );
+
+      final msg = (response.data['msg'] as String?) ?? '';
+      if (response.data['code'] == 200) {
+        return (success: true, message: msg.isNotEmpty ? msg : '密码修改成功，请重新登录');
+      }
+      return (success: false, message: msg.isNotEmpty ? msg : '修改失败');
+    } catch (e) {
+      LoggerService.instance.logWarning('修改密码失败: $e', tag: 'AuthService');
+      return (success: false, message: ErrorHandler.getErrorMessage(e));
+    }
+  }
+
+  /// 重置密码（忘记密码场景，需邮箱验证码）
   Future<bool> modifyPassword({
     required String email,
     required String password,

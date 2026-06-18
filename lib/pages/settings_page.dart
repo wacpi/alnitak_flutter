@@ -7,7 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'reset_password_page.dart';
+import 'change_password_page.dart';
 import '../services/auth_service.dart';
 import '../services/cache_service.dart';
 import '../services/theme_service.dart';
@@ -706,6 +706,26 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           const SizedBox(height: 12),
 
+          // 账号安全（仅登录后显示，放在第一位）
+          if (_isLoggedIn) ...[
+            _buildSectionHeader('账号安全', colors),
+            _buildSettingsGroup([
+              _buildTappableTile(
+                icon: Icons.lock_outline,
+                title: '修改密码',
+                value: '',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const ChangePasswordPage()),
+                  );
+                },
+                colors: colors,
+              ),
+            ], colors),
+            const SizedBox(height: 12),
+          ],
+
           // 外观设置
           _buildSectionHeader('外观设置', colors),
           _buildSettingsGroup([
@@ -814,26 +834,6 @@ class _SettingsPageState extends State<SettingsPage> {
           ], colors),
 
           const SizedBox(height: 12),
-
-          // 账号安全（仅登录后显示）
-          if (_isLoggedIn) ...[
-            _buildSectionHeader('账号安全', colors),
-            _buildSettingsGroup([
-              _buildTappableTile(
-                icon: Icons.lock_outline,
-                title: '修改密码',
-                value: '',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (context) => const ResetPasswordPage()),
-                  );
-                },
-                colors: colors,
-              ),
-            ], colors),
-            const SizedBox(height: 12),
-          ],
 
           // 关于
           _buildSectionHeader('关于', colors),
