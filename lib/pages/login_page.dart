@@ -38,6 +38,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
   bool _obscurePassword = true;
   bool _isSendingCode = false;
   int _countdown = 0;
+  bool _rememberMe = true;
 
   @override
   void initState() {
@@ -77,6 +78,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
         email: email,
         password: password,
         captchaId: _captchaId,
+        rememberMe: _rememberMe,
       );
 
       if (response != null) {
@@ -148,6 +150,7 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
       final response = await _authService.loginWithEmail(
         email: email,
         code: code,
+        rememberMe: _rememberMe,
       );
 
       if (response != null) {
@@ -387,6 +390,29 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
           ),
           const SizedBox(height: 16),
 
+          // 记住我
+          Row(
+            children: [
+              SizedBox(
+                height: 24,
+                width: 24,
+                child: Checkbox(
+                  value: _rememberMe,
+                  onChanged: (v) => setState(() => _rememberMe = v ?? true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => setState(() => _rememberMe = !_rememberMe),
+                child: Text(
+                  '记住我',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
           // 登录按钮
           ElevatedButton(
             onPressed: _isLoading ? null : _handlePasswordLogin,
@@ -478,6 +504,29 @@ class _LoginPageState extends State<LoginPage> with SingleTickerProviderStateMix
                 borderRadius: BorderRadius.circular(12),
               ),
             ),
+          ),
+          const SizedBox(height: 20),
+
+          // 记住我
+          Row(
+            children: [
+              SizedBox(
+                height: 24,
+                width: 24,
+                child: Checkbox(
+                  value: _rememberMe,
+                  onChanged: (v) => setState(() => _rememberMe = v ?? true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              GestureDetector(
+                onTap: () => setState(() => _rememberMe = !_rememberMe),
+                child: Text(
+                  '记住我',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 30),
 

@@ -51,17 +51,20 @@ class LoginRequest {
   final String email;
   final String password;
   final String? captchaId;
+  final bool rememberMe;
 
   LoginRequest({
     required this.email,
     required this.password,
     this.captchaId,
+    this.rememberMe = true,
   });
 
   Map<String, dynamic> toJson() {
     final data = {
       'email': email,
       'password': password,
+      'rememberMe': rememberMe,
     };
     if (captchaId != null) {
       data['captchaId'] = captchaId!;
@@ -75,17 +78,20 @@ class EmailLoginRequest {
   final String email;
   final String code;
   final String? captchaId;
+  final bool rememberMe;
 
   EmailLoginRequest({
     required this.email,
     required this.code,
     this.captchaId,
+    this.rememberMe = true,
   });
 
   Map<String, dynamic> toJson() {
     final data = {
       'email': email,
       'code': code,
+      'rememberMe': rememberMe,
     };
     if (captchaId != null) {
       data['captchaId'] = captchaId!;

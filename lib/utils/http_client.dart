@@ -18,6 +18,7 @@ class HttpClient {
         sendTimeout: const Duration(seconds: 30),
         headers: {
           'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
         },
         followRedirects: true,
         maxRedirects: 5,
@@ -100,6 +101,10 @@ class HttpClient {
         baseUrl: ApiConfig.baseUrl,
         connectTimeout: const Duration(seconds: 10),
         receiveTimeout: const Duration(seconds: 10),
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
       ));
 
       final response = await refreshDio.post(

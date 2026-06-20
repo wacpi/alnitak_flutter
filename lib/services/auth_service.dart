@@ -62,6 +62,7 @@ class AuthService {
     required String email,
     required String password,
     String? captchaId,
+    bool rememberMe = true,
   }) async {
     try {
       final response = await _httpClient.dio.post(
@@ -70,6 +71,7 @@ class AuthService {
           email: email,
           password: password,
           captchaId: captchaId,
+          rememberMe: rememberMe,
         ).toJson(),
       );
 
@@ -93,6 +95,7 @@ class AuthService {
     required String email,
     required String code,
     String? captchaId,
+    bool rememberMe = true,
   }) async {
     try {
       final response = await _httpClient.dio.post(
@@ -101,6 +104,7 @@ class AuthService {
           email: email,
           code: code,
           captchaId: captchaId,
+          rememberMe: rememberMe,
         ).toJson(),
       );
 
