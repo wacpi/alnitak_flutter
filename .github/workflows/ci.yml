@@ -21,7 +21,7 @@ jobs:
       # media-kit fork 是本地路径依赖，CI 中需要 clone 到对应位置
       - name: Clone media-kit fork
         run: |
-          git clone --depth 1 https://github.com/aimiliyaai/media-kit.git /home/runner/media-kit
+          git clone --depth 1 https://github.com/wacpi/media-kit.git /home/runner/media-kit
 
       # 将 pubspec.yaml 中的本地路径替换为 CI 环境路径
       - name: Patch dependency paths for CI

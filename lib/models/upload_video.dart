@@ -158,7 +158,7 @@ class VideoStatus {
       desc: json['desc'] as String? ?? '',
       tags: _parseTags(json['tags']),
       status: json['status'] as int? ?? 0,
-      copyright: json['copyright'] as bool? ?? false,
+      copyright: json['copyright'] == true || json['copyright'] == 1,
       partitionId: json['partitionId'] as int? ?? 0,
       resources: (json['resources'] as List<dynamic>?)
               ?.map((item) =>
@@ -241,12 +241,33 @@ class ManuscriptVideo {
   }
 }
 
+class UploadProgressInfo {
+  final String ossType;
+  final double progress;
+  final String status;
+
+  const UploadProgressInfo({
+    this.ossType = '',
+    this.progress = 0,
+    this.status = '',
+  });
+
+  factory UploadProgressInfo.fromJson(Map<String, dynamic> json) {
+    return UploadProgressInfo(
+      ossType: json['ossType'] as String? ?? '',
+      progress: (json['progress'] as num?)?.toDouble() ?? 0,
+      status: json['status'] as String? ?? '',
+    );
+  }
+}
+
 class TranscodingProgressItem {
   final int resourceId;
   final String resourceTitle;
   final String quality;
   final double progress;
   final String status;
+  final UploadProgressInfo? upload;
 
   const TranscodingProgressItem({
     required this.resourceId,
@@ -254,6 +275,7 @@ class TranscodingProgressItem {
     required this.quality,
     required this.progress,
     required this.status,
+    this.upload,
   });
 
   factory TranscodingProgressItem.fromJson(Map<String, dynamic> json) {
@@ -263,6 +285,9 @@ class TranscodingProgressItem {
       quality: json['quality'] as String? ?? '',
       progress: (json['progress'] as num?)?.toDouble() ?? 0,
       status: json['status'] as String? ?? 'processing',
+      upload: json['upload'] != null
+          ? UploadProgressInfo.fromJson(json['upload'] as Map<String, dynamic>)
+          : null,
     );
   }
 }

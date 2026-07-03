@@ -87,7 +87,7 @@ class ArticleStatus {
       content: json['content'] as String,
       tags: json['tags'] as String,
       status: json['status'] as int,
-      copyright: json['copyright'] as bool,
+      copyright: json['copyright'] == true || json['copyright'] == 1,
       partitionId: json['partitionId'] as int,
       createdAt: json['createdAt'] as String,
     );

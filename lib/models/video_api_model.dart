@@ -56,7 +56,7 @@ class VideoApiModel {
       cover: jsonAsString(json['cover']),
       desc: jsonAsString(json['desc']),
       createdAt: jsonAsString(json['createdAt']),
-      copyright: json['copyright'] ?? false,
+      copyright: json['copyright'] == true || json['copyright'] == 1,
       tags: _parseTags(json['tags']),
       duration: (json['duration'] ?? 0).toDouble(),
       clicks: jsonAsInt(json['clicks']),

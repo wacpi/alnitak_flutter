@@ -23,7 +23,7 @@ enum VideoFilter { all, published, transcoding, transcodeFailed, pendingReview, 
 
 class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
   final ScrollController _scrollController = ScrollController();
-  final Set<String> _expandedProgressVideos = <String>{};
+  final Set<String> _expandedResourceGroups = <String>{};
   Timer? _silentRefreshTimer;
 
   List<ManuscriptVideo> _videos = [];
@@ -640,52 +640,28 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
 
   Widget _buildTranscodingProgressSection(ManuscriptVideo video) {
     final colors = context.colors;
-    final isExpanded = _expandedProgressVideos.contains(video.vid);
     final details = video.transcodingDetails;
     final progressText = '${video.transcodingProgress.toStringAsFixed(1)}%';
+
+    // 按 resourceId 分组
+    final Map<int, List<TranscodingProgressItem>> groups = {};
+    for (final d in details) {
+      groups.putIfAbsent(d.resourceId, () => []);
+      groups[d.resourceId]!.add(d);
+    }
 
     return Padding(
       padding: const EdgeInsets.only(top: 6, bottom: 4),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 总体进度行
           Row(
             children: [
               Icon(Icons.sync, size: 14, color: colors.warning),
               const SizedBox(width: 4),
-              Text(
-                '转码进度 $progressText',
-                style: TextStyle(fontSize: 12, color: colors.warning),
-              ),
-              const Spacer(),
-              if (details.isNotEmpty)
-                InkWell(
-                  onTap: () {
-                    setState(() {
-                      if (isExpanded) {
-                        _expandedProgressVideos.remove(video.vid);
-                      } else {
-                        _expandedProgressVideos.add(video.vid);
-                      }
-                    });
-                  },
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    child: Row(
-                      children: [
-                        Text(
-                          isExpanded ? '收起' : '展开',
-                          style: TextStyle(fontSize: 11, color: colors.textSecondary),
-                        ),
-                        Icon(
-                          isExpanded ? Icons.expand_less : Icons.expand_more,
-                          size: 14,
-                          color: colors.textSecondary,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              Text('转码进度 $progressText',
+                  style: TextStyle(fontSize: 12, color: colors.warning)),
             ],
           ),
           const SizedBox(height: 4),
@@ -696,60 +672,218 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
             backgroundColor: colors.progressBackground,
             valueColor: AlwaysStoppedAnimation<Color>(colors.warning),
           ),
-          if (isExpanded && details.isNotEmpty) ...[
+          if (details.isNotEmpty) ...[
             const SizedBox(height: 8),
-            ...details.map((item) {
-              final title = item.resourceTitle.isNotEmpty ? item.resourceTitle : '分P${item.resourceId}';
-              final statusText = item.status == 'fail'
-                  ? '失败'
-                  : item.status == 'success'
-                      ? '完成'
-                      : item.status == 'waiting'
-                          ? '排队中'
-                          : '处理中';
-              final statusColor = item.status == 'fail'
-                  ? colors.error
-                  : item.status == 'success'
-                      ? colors.success
-                      : item.status == 'waiting'
-                          ? colors.textSecondary
-                          : colors.warning;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            ...groups.entries.map((entry) =>
+                _buildResourceGroup(video.vid, entry.key, entry.value, colors)),
+          ]
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResourceGroup(String videoVid, int resourceId,
+      List<TranscodingProgressItem> items, dynamic colors) {
+    final key = '$videoVid-$resourceId';
+    final isExpanded = _expandedResourceGroups.contains(key);
+    final n = items.length;
+    final totalPct = items.fold(0.0, (s, i) => s + i.progress);
+    final avgPct = n > 0 ? (totalPct / n).round() : 0;
+    final anyFail = items.any((i) => i.status == 'fail');
+    final allWaiting = items.every((i) => i.status == 'waiting');
+    final allDone = !allWaiting && !anyFail && items.every((i) => i.status == 'success');
+    final upload = items.map((i) => i.upload).firstWhere((u) => u != null, orElse: () => null);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: colors.divider),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 分组头部
+            InkWell(
+              onTap: () {
+                setState(() {
+                  if (isExpanded) {
+                    _expandedResourceGroups.remove(key);
+                  } else {
+                    _expandedResourceGroups.add(key);
+                  }
+                });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: colors.surfaceVariant,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(5),
+                    topRight: const Radius.circular(5),
+                    bottomRight: isExpanded ? Radius.zero : const Radius.circular(5),
+                    bottomLeft: isExpanded ? Radius.zero : const Radius.circular(5),
+                  ),
+                ),
+                child: Row(
                   children: [
-                    Text(
-                      '$title / ${item.quality}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                    // 箭头
+                    AnimatedRotation(
+                      turns: isExpanded ? 0.25 : 0,
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(Icons.play_arrow, size: 14, color: colors.textSecondary),
                     ),
-                    const SizedBox(height: 2),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: LinearProgressIndicator(
-                            value: (item.progress.clamp(0, 100)) / 100,
-                            minHeight: 3,
-                            borderRadius: BorderRadius.circular(2),
-                            backgroundColor: colors.progressBackground,
-                            valueColor: AlwaysStoppedAnimation<Color>(statusColor),
-                          ),
+                    const SizedBox(width: 6),
+                    // 标题
+                    Flexible(
+                      child: Text(
+                        items.first.resourceTitle.isNotEmpty
+                            ? items.first.resourceTitle
+                            : '分P$resourceId',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: colors.textPrimary),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text('$n 个画质', style: TextStyle(fontSize: 11, color: colors.textSecondary)),
+                    const Spacer(),
+                    // 状态标签
+                    if (allWaiting)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: colors.textSecondary.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(3),
                         ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${item.progress.toStringAsFixed(0)}% $statusText',
-                          style: TextStyle(fontSize: 10, color: statusColor),
+                        child: Text('排队中', style: TextStyle(fontSize: 10, color: colors.textSecondary)),
+                      )
+                    else if (anyFail)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: colors.error.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(3),
                         ),
-                      ],
+                        child: Text('失败', style: TextStyle(fontSize: 10, color: colors.error)),
+                      )
+                    else if (allDone)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: colors.success.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                        child: Text('完成', style: TextStyle(fontSize: 10, color: colors.success)),
+                      ),
+                    const SizedBox(width: 8),
+                    // 汇总进度条
+                    SizedBox(
+                      width: 140,
+                      child: LinearProgressIndicator(
+                        value: allWaiting ? 0 : avgPct / 100,
+                        minHeight: 14,
+                        borderRadius: BorderRadius.circular(7),
+                        backgroundColor: colors.progressBackground,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          anyFail ? colors.error : (allDone ? colors.success : colors.warning),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      allWaiting ? '0%' : '$avgPct%',
+                      style: TextStyle(fontSize: 10, color: colors.textSecondary),
                     ),
                   ],
                 ),
-              );
-            }),
-          ]
-        ],
+              ),
+            ),
+            // 展开详情
+            if (isExpanded) ...[
+              Container(
+                padding: const EdgeInsets.fromLTRB(22, 6, 12, 4),
+                decoration: BoxDecoration(
+                  border: Border(top: BorderSide(color: colors.divider)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ...items.map((item) => Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(item.quality, style: TextStyle(fontSize: 11, color: colors.textSecondary)),
+                          const SizedBox(height: 2),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: LinearProgressIndicator(
+                                  value: (item.progress.clamp(0, 100)) / 100,
+                                  minHeight: 10,
+                                  borderRadius: BorderRadius.circular(5),
+                                  backgroundColor: colors.progressBackground,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    item.status == 'fail' ? colors.error :
+                                    item.status == 'success' ? colors.success :
+                                    colors.warning,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                '${item.progress.toStringAsFixed(0)}%',
+                                style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    )),
+                    // 上传进度
+                    if (upload != null && upload.status != 'local')
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(height: 1, color: colors.divider),
+                            const SizedBox(height: 6),
+                            Text('OSS 上传', style: TextStyle(fontSize: 11, color: colors.textSecondary)),
+                            const SizedBox(height: 2),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: LinearProgressIndicator(
+                                    value: (upload.progress.clamp(0, 100)) / 100,
+                                    minHeight: 10,
+                                    borderRadius: BorderRadius.circular(5),
+                                    backgroundColor: colors.progressBackground,
+                                    valueColor: AlwaysStoppedAnimation<Color>(
+                                      upload.status == 'fail' ? colors.error :
+                                      upload.status == 'success' ? colors.success :
+                                      colors.warning,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '${upload.progress.toStringAsFixed(0)}%',
+                                  style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

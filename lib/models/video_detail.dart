@@ -54,7 +54,7 @@ class VideoDetail {
       desc: jsonAsString(json['desc']),
       tags: _parseTagsField(json['tags']),
       clicks: jsonAsInt(json['clicks']),
-      copyright: json['copyright'] ?? false,
+      copyright: json['copyright'] == true || json['copyright'] == 1,
       duration: (json['duration'] ?? 0).toDouble(),
       author: UserInfo.fromJson({
         ...Map<String, dynamic>.from(json['author'] as Map? ?? {}),

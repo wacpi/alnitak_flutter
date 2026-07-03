@@ -36,7 +36,7 @@ class ArticleDetail {
       cover: ImageUtils.getFullImageUrl(json['cover'] ?? ''),
       content: json['content'] ?? '',
       createdAt: json['createdAt'] ?? '',
-      copyright: json['copyright'] ?? false,
+      copyright: json['copyright'] == true || json['copyright'] == 1,
       tags: json['tags'] ?? '',
       clicks: json['clicks'] ?? 0,
       partitionId: json['partitionId'] ?? 0,
