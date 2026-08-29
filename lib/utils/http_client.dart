@@ -162,6 +162,10 @@ class RetryInterceptor extends Interceptor {
   final int retries;
   final List<Duration> retryDelays;
 
+  /// 允许跨层重试叠加的请求（默认 false）：
+  /// 已被 DomainFallbackInterceptor 切换过的请求不再重试，避免两套重试叠加。
+  static const String skipAfterFallbackKey = 'skipRetryAfterFallback';
+
   RetryInterceptor({
     required this.dio,
     this.retries = 3,
@@ -172,8 +176,16 @@ class RetryInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
+    // 域名已切换过的请求不再本层重试，防止与 DomainFallbackInterceptor 叠加
+    if (err.requestOptions.extra['fallbackTried'] == true &&
+        err.requestOptions.extra[skipAfterFallbackKey] != false) {
+      return super.onError(err, handler);
+    }
+
+    // 允许请求通过 extra['maxRetries'] 覆盖全局重试次数
+    final maxRetries = err.requestOptions.extra['maxRetries'] as int? ?? retries;
     final count = err.requestOptions.extra['retryCount'] as int? ?? 0;
-    if (count < retries && _shouldRetry(err)) {
+    if (count < maxRetries && _shouldRetry(err)) {
       err.requestOptions.extra['retryCount'] = count + 1;
       await Future.delayed(
         count < retryDelays.length ? retryDelays[count] : retryDelays.last,

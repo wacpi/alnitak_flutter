@@ -4,6 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as path;
 import 'package:media_kit/media_kit.dart';
+import '../models/upload_state.dart';
 import '../utils/http_client.dart';
 
 /// 上传API服务 - 参考PC端实现
@@ -27,7 +28,7 @@ class UploadApiService {
         'filename': fileName,
         'size': fileSize,
         'mimeType': mimeType,
-      });
+      }, options: Options(extra: {'maxRetries': 2}));
       final presignData = presignResponse.data as Map<String, dynamic>;
       if (presignData['code'] != 200) {
         throw Exception(presignData['msg'] ?? '获取上传凭证失败');
@@ -156,63 +157,96 @@ class UploadApiService {
   /// [vid] 可选的视频ID，用于添加多分P（参考PC端：有vid时使用不同的endpoint）
   /// [filename] 可选的原始文件名，如果不传则使用file路径的文件名
   /// [onCancel] 可选的取消回调，返回true表示需要取消上传
+  /// [onState] 可选的状态回调：各阶段与单调进度（0~1 不回跳）
   static Future<Map<String, dynamic>> uploadVideo({
     required File file,
     required String title,
     required Function(double) onProgress,
+    Function(UploadState)? onState,
     String? vid,
     String? filename,
     bool Function()? onCancel,
   }) async {
-    final fileMd5 = await _calculateFileMd5(file, onCancel: onCancel);
-    final fileSize = await file.length();
-    if (onCancel?.call() == true) throw Exception('上传已取消');
-    final fileName = filename ?? path.basename(file.path);
-
-    // 后台探测视频（截封面 + 元数据，不阻塞上传）
-    final probeFuture = _probeVideo(file);
-
-    final checkResult = await _checkUploadedChunks(fileMd5, fileSize);
-    final uploadedChunks = checkResult['chunks'] as List<int>;
-    final instantUpload = checkResult['instantUpload'] as bool;
-    final fileID = checkResult['fileID'] as String? ?? '';
-    if (onCancel?.call() == true) throw Exception('上传已取消');
-
-    final probe = await probeFuture;
-
-    if (instantUpload) {
-      onProgress(1.0);
-      return _getVideoInfo(fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+    // 单调进度：OSS 失败回退 VPS 时进度不回跳
+    var maxProgress = 0.0;
+    void emit(UploadStage stage, double progress, [String? message]) {
+      if (progress > maxProgress) maxProgress = progress;
+      final p = maxProgress;
+      try {
+        onProgress(p);
+      } catch (_) {}
+      onState?.call(UploadState(stage: stage, progress: p, message: message));
     }
 
-    // 尝试直传 OSS
-    final useOSS = await _tryDirectUpload(
-      file: file,
-      fileMd5: fileMd5,
-      fileName: fileName,
-      fileSize: fileSize,
-      uploadedChunks: uploadedChunks,
-      onProgress: onProgress,
-      onCancel: onCancel,
-      fileID: fileID,
-    );
+    try {
+      emit(UploadStage.hashing, 0.0, '计算MD5...');
+      final fileMd5 = await _calculateFileMd5(file, onCancel: onCancel);
+      final fileSize = await file.length();
+      if (onCancel?.call() == true) throw Exception('上传已取消');
+      final fileName = filename ?? path.basename(file.path);
 
-    if (!useOSS) {
-      // fallback: 原始 VPS 代理分片上传
-      await _uploadInChunks(
+      // 后台探测视频（截封面 + 元数据，不阻塞上传）
+      emit(UploadStage.probing, maxProgress, '解析视频...');
+      final probeFuture = _probeVideo(file);
+
+      emit(UploadStage.checking, maxProgress, '检查上传状态...');
+      final checkResult = await _checkUploadedChunks(fileMd5, fileSize);
+      final uploadedChunks = checkResult['chunks'] as List<int>;
+      final instantUpload = checkResult['instantUpload'] as bool;
+      final fileID = checkResult['fileID'] as String? ?? '';
+      if (onCancel?.call() == true) throw Exception('上传已取消');
+
+      final probe = await probeFuture;
+
+      if (instantUpload) {
+        emit(UploadStage.done, 1.0, '秒传完成');
+        final info = await _getVideoInfo(
+            fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+        emit(UploadStage.completing, 1.0, '创建资源...');
+        return info;
+      }
+
+      // 尝试直传 OSS
+      final useOSS = await _tryDirectUpload(
         file: file,
         fileMd5: fileMd5,
         fileName: fileName,
+        fileSize: fileSize,
         uploadedChunks: uploadedChunks,
-        onProgress: onProgress,
+        onProgress: (p) => emit(UploadStage.directUpload, p, '直传OSS'),
         onCancel: onCancel,
+        fileID: fileID,
       );
-      if (onCancel?.call() == true) throw Exception('上传已取消');
-      await _mergeChunks(hash: fileMd5, fileID: fileID, size: fileSize);
-    }
 
-    if (onCancel?.call() == true) throw Exception('上传已取消');
-    return _getVideoInfo(fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+      if (!useOSS) {
+        // fallback: 原始 VPS 代理分片上传
+        await _uploadInChunks(
+          file: file,
+          fileMd5: fileMd5,
+          fileName: fileName,
+          uploadedChunks: uploadedChunks,
+          onProgress: (p) => emit(UploadStage.chunkUpload, p, 'VPS分片上传'),
+          onCancel: onCancel,
+        );
+        if (onCancel?.call() == true) throw Exception('上传已取消');
+        emit(UploadStage.merging, maxProgress, '合并分片...');
+        await _mergeChunks(hash: fileMd5, fileID: fileID, size: fileSize);
+      }
+
+      if (onCancel?.call() == true) throw Exception('上传已取消');
+      emit(UploadStage.completing, maxProgress, '创建资源...');
+      final info = await _getVideoInfo(
+          fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+      emit(UploadStage.done, 1.0, '上传完成');
+      return info;
+    } catch (e) {
+      if (onCancel?.call() == true) {
+        emit(UploadStage.cancelled, maxProgress, '上传已取消');
+      } else {
+        emit(UploadStage.failed, maxProgress, '上传失败: $e');
+      }
+      rethrow;
+    }
   }
 
   /// 尝试直传 OSS，返回 true 表示成功（或秒传），false 表示应回退 VPS 代理
@@ -238,7 +272,7 @@ class UploadApiService {
         'size': fileSize,
         'fileName': fileName,
         'totalChunks': totalChunks,
-      });
+      }, options: Options(extra: {'maxRetries': 2}));
       final initData = initRes.data as Map<String, dynamic>;
       if (initData['code'] != 200) return false;
 
@@ -261,6 +295,10 @@ class UploadApiService {
       final parts = <Map<String, dynamic>>[];
       var uploadedCount = uploadedChunks.length;
       List<dynamic> currentChunks = initChunks;
+
+      // 全局失败预算：连续 3 个分片彻底失败 → 放弃直传（防止无限重试烧时间）
+      const int maxConsecutiveChunkFailures = 3;
+      var consecutiveChunkFailures = 0;
 
       while (currentChunks.isNotEmpty) {
         if (onCancel?.call() == true) throw Exception('上传已取消');
@@ -287,12 +325,18 @@ class UploadApiService {
                 await Future.delayed(Duration(milliseconds: 1000 * (1 << retry)));
                 continue;
               }
-              return false;
             }
           }
 
-          if (etag == null) return false;
+          if (etag == null) {
+            consecutiveChunkFailures++;
+            if (consecutiveChunkFailures >= maxConsecutiveChunkFailures) {
+              return false;
+            }
+            continue;
+          }
 
+          consecutiveChunkFailures = 0;
           parts.add({'partNumber': partNumber, 'etag': etag});
           uploadedCount++;
           onProgress((uploadedCount / initTotalChunks).clamp(0.0, 1.0));
@@ -307,7 +351,7 @@ class UploadApiService {
           'fileID': initFileID,
           'start': nextBatchStart,
           'count': 20,
-        });
+        }, options: Options(extra: {'maxRetries': 2}));
         final presignData = presignRes.data as Map<String, dynamic>;
         if (presignData['code'] != 200) return false;
 
@@ -326,7 +370,7 @@ class UploadApiService {
         'fileID': initFileID,
         'uploadID': initUploadID,
         'parts': parts,
-      });
+      }, options: Options(extra: {'maxRetries': 2}));
       final completeData = completeRes.data as Map<String, dynamic>;
       if (completeData['code'] != 200) return false;
 
@@ -393,6 +437,7 @@ class UploadApiService {
     final response = await _dio.post(
       '/api/v1/upload/checkVideo',
       data: {'hash': hash, 'size': size},
+      options: Options(extra: {'maxRetries': 2}),
     );
 
     final data = response.data as Map<String, dynamic>;
@@ -506,6 +551,7 @@ class UploadApiService {
     final response = await _dio.post(
       '/api/v1/upload/chunkVideo',
       data: formData,
+      options: Options(extra: {'maxRetries': 2}),
     );
 
     final data = response.data as Map<String, dynamic>;
@@ -519,6 +565,7 @@ class UploadApiService {
     final response = await _dio.post(
       '/api/v1/upload/mergeVideo',
       data: {'hash': hash, 'fileID': fileID, 'size': size},
+      options: Options(extra: {'maxRetries': 2}),
     );
 
     final data = response.data as Map<String, dynamic>;
@@ -544,6 +591,8 @@ static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, requi
           if ((probe['height'] ?? 0) > 0) 'height': probe['height'],
         },
       },
+      // 建资源非幂等：重复提交会生成重复资源，不自动重试
+      options: Options(extra: {'maxRetries': 0}),
     );
 
     final data = response.data as Map<String, dynamic>;

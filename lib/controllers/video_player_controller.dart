@@ -1560,6 +1560,10 @@ class VideoPlayerController extends ChangeNotifier {
     _manifest = null;
     _cacheService.cleanupAllTempCache();
 
+    // DASH 定时续签 Timer 必须取消，否则测试/页面销毁会报 Timer pending
+    _dashRefreshTimer?.cancel();
+    _dashRefreshTimer = null;
+
     availableQualities.dispose();
     currentQuality.dispose();
     isLoading.dispose();

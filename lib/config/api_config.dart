@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -76,13 +77,47 @@ class ApiConfig {
 
   // ── 内网探测 ──
 
-  /// 探测 ayypd.cn：3s 内有响应 → 内网，否则外网
+  /// 探测内网：DNS 有记录且 HTTP/HTTPS 端口可达 → 内网，否则外网
+  ///
+  /// 探测顺序：
+  /// 1. DNS 查 [internalHost]（hosts 未绑定则直接判定外网，不白等超时）
+  /// 2. 优先 HTTP:9000（开发环境明文端口，Android 已放行 cleartext）
+  /// 3. HTTP 不通再试 HTTPS:9001（自签证书场景兜底）
   static Future<void> detectNetwork() async {
+    // 1. DNS 预查：hosts / DNS 里没有内网域名记录就直接外网
+    final hasInternalRecord = await _hasInternalDns();
+    if (!hasInternalRecord) {
+      useInternal = false;
+      return;
+    }
+
+    // 2/3. HTTP 优先探测，HTTPS 兜底
+    final httpOk = await _pingInternal(https: false);
+    if (httpOk) {
+      useInternal = true;
+      return;
+    }
+    final httpsOk = await _pingInternal(https: true);
+    useInternal = httpsOk;
+  }
+
+  static Future<bool> _hasInternalDns() async {
+    try {
+      // 2s 超时：避免 WiFi 无 DNS 时长时间阻塞启动
+      final results = await InternetAddress.lookup(internalHost)
+          .timeout(const Duration(seconds: 2));
+      return results.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> _pingInternal({required bool https}) async {
     try {
       final url = _buildUrl(
-        https: _httpsEnabled,
+        https: https,
         host: internalHost,
-        port: _httpsEnabled ? internalPortHttps : internalPortHttp,
+        port: https ? internalPortHttps : internalPortHttp,
       );
       final dio = Dio(BaseOptions(
         baseUrl: url,
@@ -90,9 +125,9 @@ class ApiConfig {
         receiveTimeout: const Duration(seconds: 3),
       ));
       final resp = await dio.get('/api/v1/auth/ping');
-      useInternal = resp.statusCode == 200;
+      return resp.statusCode == 200;
     } catch (_) {
-      useInternal = false;
+      return false;
     }
   }
 

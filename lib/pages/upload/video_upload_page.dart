@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../models/partition.dart';
+import '../../models/upload_state.dart';
 import '../../models/upload_video.dart';
 import '../../services/partition_api_service.dart';
 import '../../services/upload_api_service.dart';
@@ -50,8 +51,13 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
 
   bool _copyright = true;
   bool _isLoading = false;
-  bool _isUploading = false;
-  double _uploadProgress = 0.0;
+
+  /// 上传状态机（null = 未开始）
+  UploadState? _uploadState;
+
+  /// 是否正在上传（基于状态机派生，非独立字段）
+  bool get _isUploading => _uploadState != null && !_uploadState!.isFinished;
+
   String? _errorMessage;
 
   // 上传取消标志：当用户主动离开页面时设为true
@@ -315,8 +321,11 @@ Future<void> _uploadVideo({String? title}) async {
 
     // 初始状态更新
     setState(() {
-      _isUploading = true;
-      _uploadProgress = 0.0;
+      _uploadState = const UploadState(
+        stage: UploadStage.hashing,
+        progress: 0.0,
+        message: '准备上传...',
+      );
       _errorMessage = null;
     });
 
@@ -330,10 +339,11 @@ Future<void> _uploadVideo({String? title}) async {
         file: _videoFile!,
         filename: actualFilename,
         title: videoTitle,
-        onProgress: (progress) {
+        onProgress: (progress) {},
+        onState: (state) {
           if (mounted) {
             setState(() {
-              _uploadProgress = progress;
+              _uploadState = state;
             });
           }
         },
@@ -343,10 +353,6 @@ Future<void> _uploadVideo({String? title}) async {
 
       // 异步操作结束后，必须检查页面是否还存在
       if (!mounted) return;
-
-      setState(() {
-        _isUploading = false;
-      });
 
       final vid = videoInfo['vid']?.toString();
 
@@ -395,12 +401,6 @@ Future<void> _uploadVideo({String? title}) async {
         await FilePicker.platform.clearTemporaryFiles();
       } catch (e) {
         LoggerService.instance.logWarning('取消后清理临时文件失败: $e', tag: 'VideoUpload');
-      }
-
-      if (mounted) {
-        setState(() {
-          _isUploading = false;
-        });
       }
     }
   }
@@ -868,12 +868,14 @@ Future<void> _uploadVideo({String? title}) async {
                               height: 80,
                               child: CircularProgressIndicator(
                                 strokeWidth: 4,
-                                value: _uploadProgress,
+                                value: _uploadState?.progress ?? 0,
                               ),
                             ),
                             const SizedBox(height: 24),
                             Text(
-                              '上传中 ${(_uploadProgress * 100).toStringAsFixed(0)}%',
+                              _uploadState?.message != null
+                                  ? '${_uploadState!.message} ${(_uploadState!.progress * 100).toStringAsFixed(0)}%'
+                                  : '上传中 ${((_uploadState?.progress ?? 0) * 100).toStringAsFixed(0)}%',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w500,
