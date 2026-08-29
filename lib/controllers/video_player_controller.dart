@@ -13,15 +13,14 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:audio_session/audio_session.dart';
 
 import '../services/video_stream_service.dart';
 import '../services/cache_service.dart';
-import '../services/history_service.dart';
 import '../services/logger_service.dart';
 import '../services/player_settings_service.dart';
+import '../services/audio_focus_service.dart';
+import '../services/playback_progress_service.dart';
 import '../models/data_source.dart';
 import '../models/dash_models.dart';
 import '../models/subtitle_track_item.dart';
@@ -42,7 +41,12 @@ class VideoPlayerController extends ChangeNotifier {
   final VideoStreamService _streamService = VideoStreamService();
   final CacheService _cacheService = CacheService();
   final LoggerService _logger = LoggerService.instance;
-  SharedPreferences? _prefs;
+
+  /// 音频焦点管理（会话配置/中断/becomingNoisy）
+  late final AudioFocusService _audioFocus;
+
+  /// 播放进度恢复
+  late final PlaybackProgressService _progressService;
 
   // ===========================================================================
   // 2. 播放器核心实例
@@ -131,14 +135,10 @@ class VideoPlayerController extends ChangeNotifier {
   String? _videoAuthor;
   Uri? _videoCoverUri;
 
-  // 音频中断处理
-  AudioSession? _audioSession;
-  bool _wasPlayingBeforeInterruption = false;
-  final int _audioOwnerId = identityHashCode(Object());
+  // 音频中断处理（逻辑委托 AudioFocusService）
 
   // 常量与防抖控制
   int _lastPtsLoggedSecond = -1;
-  int? _lastProgressFetchTime;
   DateTime? _lastVideoEndAt;
   DateTime? _lastPlaybackBackwardLogAt;
   static const int _bufferingSustainMs = 1500;
@@ -146,12 +146,8 @@ class VideoPlayerController extends ChangeNotifier {
   static const int _startupReadyTimeoutMs = 1500;
   static const int _playbackPositionGuardMs = 2000;
   static const int _spuriousBackwardJumpMs = 1600;
-  static const int _restoreBackwardIgnoreMaxSeconds = 15;
   /// 进度条上缓冲右端至少比当前播放位置多出这么多秒（对齐 YouTube 观感）
   static const int _minBufferedBarAheadSeconds = 3;
-  static const String _preferredQualityKey = 'preferred_video_quality_display_name';
-  static const String _loopModeKey = 'video_loop_mode';
-  static const String _backgroundPlayKey = 'background_play_enabled';
   /// DASH MPD 定时续签提前量（ms）：TTL 到期前 30 分钟触发
   static const int _dashRefreshAheadMs = 30 * 60 * 1000;
   /// DASH OSS 签名 URL 有效期（ms）：24h
@@ -168,8 +164,6 @@ class VideoPlayerController extends ChangeNotifier {
 
   List<StreamSubscription> _subscriptions = [];
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
-  StreamSubscription? _interruptionSubscription;
-  StreamSubscription? _becomingNoisySubscription;
 
   Timer? _stalledTimer;
   Timer? _seekTimer;
@@ -178,11 +172,32 @@ class VideoPlayerController extends ChangeNotifier {
   bool _dashTokenRefreshed = false;
 
 
-  VideoPlayerController();
+  VideoPlayerController() {
+    _audioFocus = AudioFocusService(
+      isPlaying: () => _player?.state.playing ?? false,
+      onPause: ({bool isInterrupt = false}) => pause(isInterrupt: isInterrupt),
+      onResumePlay: () async {
+        if (_player != null && !_isDisposed && !_player!.state.playing) {
+          await play();
+        }
+      },
+      onDuck: (duck) {
+        if (_player == null || _isDisposed) return;
+        final factor = duck ? 0.5 : 2.0;
+        _player!.setVolume((_player!.state.volume * factor).clamp(0, 100));
+      },
+    );
 
-  Future<SharedPreferences> get _preferences async {
-    _prefs ??= await SharedPreferences.getInstance();
-    return _prefs!;
+    _progressService = PlaybackProgressService(
+      isDisposed: () => _isDisposed,
+      isSessionActive: _isSessionActive,
+      isPlayerInitialized: () => isPlayerInitialized.value,
+      currentVid: () => _currentVid,
+      currentPart: () => _currentPart,
+      currentPosition: () => _player?.state.position ?? Duration.zero,
+      onSeek: seek,
+      log: _playbackLog,
+    );
   }
 
   // ===========================================================================
@@ -311,15 +326,12 @@ class VideoPlayerController extends ChangeNotifier {
       ),
     );
     
-    audioHandler.attachPlayer(
+    _audioFocus.attachPlayer(
       _player!,
-      ownerId: _audioOwnerId,
-      onPlay: () => play(),
-      onPause: () => pause(),
       onSeek: (pos) => seek(pos),
     );
     
-    await _initAudioSession();
+    await _audioFocus.init();
     await _configurePlayerOnce(decodeMode);
 
     _videoController = VideoController(
@@ -451,17 +463,15 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> play() async {
     if (_isDisposed || _player == null) return;
-    if (_audioSession != null) {
-      await _audioSession!.setActive(true);
-    }
+    await _audioFocus.activate();
     await _player!.play();
   }
 
   Future<void> pause({bool isInterrupt = false}) async {
     if (_isDisposed || _player == null) return;
     await _player!.pause();
-    if (!isInterrupt && _audioSession != null) {
-      await _audioSession!.setActive(false);
+    if (!isInterrupt) {
+      await _audioFocus.deactivate();
     }
   }
 
@@ -622,68 +632,17 @@ class VideoPlayerController extends ChangeNotifier {
     _updateNotifierValue(bufferedSeconds, endAbs);
   }
 
+  /// 获取并恢复播放进度（委托 [PlaybackProgressService]）
   Future<void> fetchAndRestoreProgress() async {
     if (_isDisposed) return;
-
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (_lastProgressFetchTime != null && now - _lastProgressFetchTime! < 500) return;
-    _lastProgressFetchTime = now;
-
-    if (_currentVid == null) return;
     final sessionId = _playbackSessionId;
-
-    if (!isPlayerInitialized.value) {
-      Future.delayed(const Duration(milliseconds: 500), () async {
-        if (_isSessionActive(sessionId) && _currentVid != null) {
-          await _doFetchAndRestoreProgress();
-        }
-      });
-      return;
-    }
-    await _doFetchAndRestoreProgress();
+    await _progressService.fetchAndRestore(sessionId);
   }
 
-  Future<void> _doFetchAndRestoreProgress() async {
-    if (_currentVid == null) return;
-    final requestVid = _currentVid!;
-    final requestPart = _currentPart;
-
-    try {
-      final historyService = HistoryService();
-      final progressData = await historyService.getProgress(vid: requestVid, part: requestPart);
-
-      if (_isDisposed || _currentVid != requestVid || _currentPart != requestPart) return;
-      if (progressData == null) return;
-
-      final targetPos = _restoreTargetSecondsFromHistory(progressData);
-      if (targetPos == null) return;
-
-      final currentPos = player.state.position.inSeconds;
-      if ((targetPos - currentPos).abs() <= 3) return;
-
-      if (targetPos < currentPos &&
-          currentPos - targetPos <= _restoreBackwardIgnoreMaxSeconds) {
-        return;
-      }
-
-      _playbackLog('history restore seek current=${currentPos}s -> target=${targetPos}s vid=$requestVid part=$requestPart');
-      await seek(Duration(seconds: targetPos));
-    } catch (e) {
-      _logger.logWarning('恢复播放进度失败: $e');
-    }
-  }
-
-  int? _restoreTargetSecondsFromHistory(PlayProgressData data) {
-    final p = data.progress;
-    if (p < 0) return null;
-    if (data.duration > 0) {
-      final adjusted = p > 2 ? p - 2 : p;
-      final remaining = data.duration - adjusted;
-      if (remaining <= 3) return null;
-    }
-    final adjustedProgress = p > 2 ? p - 2 : p;
-    return adjustedProgress.floor();
-  }
+  /// 由历史进度计算恢复目标秒数（透传，供测试/复用）
+  @visibleForTesting
+  int? restoreTargetSecondsFromHistory(PlayProgressData data) =>
+      _progressService.restoreTargetSecondsFromHistory(data);
 
   void _armPlaybackPositionGuard(Duration anchor) {
     _playbackPositionGuardAnchor = anchor;
@@ -903,63 +862,8 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // 10. 音频会话、生命周期与设置管理
+  // 10. 生命周期与设置管理
   // ===========================================================================
-
-  Future<void> _initAudioSession() async {
-    try {
-      _audioSession = await AudioSession.instance;
-      await _audioSession!.configure(const AudioSessionConfiguration.music());
-
-      _interruptionSubscription = _audioSession!.interruptionEventStream.listen((event) {
-        _handleAudioInterruption(event);
-      });
-
-      _becomingNoisySubscription = _audioSession!.becomingNoisyEventStream.listen((_) {
-        _handleBecomingNoisy();
-      });
-
-      _logger.logDebug('[AudioSession] 初始化成功', tag: 'AudioSession');
-    } catch (e) {
-      _logger.logError(message: '[AudioSession] 初始化失败: $e');
-    }
-  }
-
-  void _handleAudioInterruption(AudioInterruptionEvent event) {
-    if (_player == null || _isDisposed) return;
-    if (event.begin) {
-      switch (event.type) {
-        case AudioInterruptionType.duck:
-          _player!.setVolume((_player!.state.volume * 0.5).clamp(0, 100));
-          break;
-        case AudioInterruptionType.pause:
-        case AudioInterruptionType.unknown:
-          _wasPlayingBeforeInterruption = _player!.state.playing;
-          if (_wasPlayingBeforeInterruption) pause(isInterrupt: true);
-          break;
-      }
-    } else {
-      switch (event.type) {
-        case AudioInterruptionType.duck:
-          _player!.setVolume((_player!.state.volume * 2).clamp(0, 100));
-          break;
-        case AudioInterruptionType.pause:
-          if (_wasPlayingBeforeInterruption) {
-            _wasPlayingBeforeInterruption = false;
-            if (_player != null && !_isDisposed && !_player!.state.playing) play();
-          }
-          break;
-        case AudioInterruptionType.unknown:
-          _wasPlayingBeforeInterruption = false;
-          break;
-      }
-    }
-  }
-
-  void _handleBecomingNoisy() {
-    if (_player == null || _isDisposed) return;
-    if (_player!.state.playing) pause();
-  }
 
   void handleAppLifecycleState(bool isPaused) {
     if (_player == null || _isDisposed) return;
@@ -982,16 +886,14 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> toggleBackgroundPlay() async {
     backgroundPlayEnabled.value = !backgroundPlayEnabled.value;
-    final prefs = await _preferences;
-    await prefs.setBool(_backgroundPlayKey, backgroundPlayEnabled.value);
+    await PlayerSettingsService.setBackgroundPlayEnabled(backgroundPlayEnabled.value);
   }
 
   Future<void> toggleLoopMode() async {
     final nextMode = (loopMode.value.index + 1) % LoopMode.values.length;
     loopMode.value = LoopMode.values[nextMode];
     await _syncLoopProperty();
-    final prefs = await _preferences;
-    await prefs.setInt(_loopModeKey, loopMode.value.index);
+    await PlayerSettingsService.setLoopModeIndex(loopMode.value.index);
   }
 
   // ===========================================================================
@@ -1280,9 +1182,9 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> _loadSettings() async {
     try {
-      final prefs = await _preferences;
-      backgroundPlayEnabled.value = prefs.getBool(_backgroundPlayKey) ?? false;
-      final loopModeValue = prefs.getInt(_loopModeKey) ?? 0;
+      backgroundPlayEnabled.value =
+          await PlayerSettingsService.getBackgroundPlayEnabled();
+      final loopModeValue = await PlayerSettingsService.getLoopModeIndex();
       loopMode.value = LoopMode.values[loopModeValue];
       _settingsLoaded = true;
     } catch (e) {
@@ -1292,8 +1194,7 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<String> _getPreferredQuality(List<String> qualities) async {
     try {
-      final prefs = await _preferences;
-      final preferredName = prefs.getString(_preferredQualityKey);
+      final preferredName = await PlayerSettingsService.getPreferredQuality();
       return findBestQualityMatch(qualities, preferredName);
     } catch (e) {
       _logger.logWarning('获取首选清晰度失败: $e');
@@ -1303,8 +1204,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> _savePreferredQuality(String quality) async {
     try {
-      final prefs = await _preferences;
-      await prefs.setString(_preferredQualityKey, formatQualityDisplayName(quality));
+      await PlayerSettingsService.setPreferredQuality(
+          formatQualityDisplayName(quality));
     } catch (e) {
       _logger.logWarning('保存首选清晰度失败: $e');
     }
@@ -1521,24 +1422,10 @@ class VideoPlayerController extends ChangeNotifier {
   // 12. 释放资源 Dispose
   // ===========================================================================
 
-  void _disposeAudioSession() {
-    try {
-      unawaited(_audioSession?.setActive(false));
-    } catch (_) {
-      // 释放音频焦点失败不阻塞 dispose
-    }
-    unawaited(_interruptionSubscription?.cancel());
-    unawaited(_becomingNoisySubscription?.cancel());
-    _interruptionSubscription = null;
-    _becomingNoisySubscription = null;
-    _audioSession = null;
-  }
-
   Future<void> _disposeAsync() async {
     WakelockManager.disable();
-    _disposeAudioSession();
-    await audioHandler.stopIfOwner(_audioOwnerId);
-    audioHandler.detachPlayerIfOwner(_audioOwnerId);
+    await _audioFocus.detachPlayer();
+    await _audioFocus.dispose();
     if (_player != null) {
       await _player!.dispose();
       _player = null;

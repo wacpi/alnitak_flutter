@@ -181,4 +181,42 @@ class PlayerSettingsService {
         return value;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // 循环模式 / 后台播放 / 首选清晰度（从 VideoPlayerController 迁移的纯 CRUD）
+  // ---------------------------------------------------------------------------
+
+  static const String loopModeKey = 'video_loop_mode';
+  static const String backgroundPlayKey = 'background_play_enabled';
+  static const String preferredQualityKey = 'preferred_video_quality_display_name';
+
+  static Future<int> getLoopModeIndex() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(loopModeKey) ?? 0;
+  }
+
+  static Future<void> setLoopModeIndex(int index) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(loopModeKey, index);
+  }
+
+  static Future<bool> getBackgroundPlayEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(backgroundPlayKey) ?? false;
+  }
+
+  static Future<void> setBackgroundPlayEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(backgroundPlayKey, value);
+  }
+
+  static Future<String?> getPreferredQuality() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(preferredQualityKey);
+  }
+
+  static Future<void> setPreferredQuality(String displayName) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(preferredQualityKey, displayName);
+  }
 }
