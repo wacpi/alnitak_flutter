@@ -1,205 +1,162 @@
 import 'dart:async';
 import 'package:dio/dio.dart';
 import '../config/api_config.dart';
+import '../services/logger_service.dart';
 import 'token_manager.dart';
 
 class HttpClient {
   static final HttpClient _instance = HttpClient._internal();
-  factory HttpClient() => _instance;
+  factory HttpClient() => HttpClient._instance;
 
   late final Dio dio;
 
   HttpClient._internal() {
-    dio = Dio(
-      BaseOptions(
-        baseUrl: ApiConfig.baseUrl,
-        connectTimeout: const Duration(seconds: 30),
-        receiveTimeout: const Duration(seconds: 60),
-        sendTimeout: const Duration(seconds: 30),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-        followRedirects: true,
-        maxRedirects: 5,
-      ),
-    );
+    dio = Dio(BaseOptions(
+      baseUrl: ApiConfig.baseUrl,
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+      sendTimeout: const Duration(seconds: 30),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      followRedirects: true,
+      maxRedirects: 5,
+    ));
 
-    dio.interceptors.add(
+    dio.interceptors.addAll([
       AuthInterceptor(this),
-    );
-
-    dio.interceptors.add(
+      DomainFallbackInterceptor(dio),
       RetryInterceptor(
         dio: dio,
         retries: 10,
         retryDelays: const [
-          Duration(seconds: 1),
-          Duration(seconds: 2),
-          Duration(seconds: 3),
-          Duration(seconds: 3),
-          Duration(seconds: 5),
-          Duration(seconds: 5),
-          Duration(seconds: 8),
-          Duration(seconds: 8),
-          Duration(seconds: 10),
-          Duration(seconds: 10),
+          Duration(seconds: 1), Duration(seconds: 2),
+          Duration(seconds: 3), Duration(seconds: 3),
+          Duration(seconds: 5), Duration(seconds: 5),
+          Duration(seconds: 8), Duration(seconds: 8),
+          Duration(seconds: 10), Duration(seconds: 10),
         ],
       ),
-    );
-
+    ]);
   }
 
+  /// 启动时探测内网，确定使用 ayypd 还是 acgkiss
   Future<void> init() async {
+    await ApiConfig.detectNetwork();
     dio.options.baseUrl = ApiConfig.baseUrl;
+    LoggerService.instance.logDebug(
+      '[HttpClient] baseUrl = ${ApiConfig.baseUrl} '
+      '(内网=${ApiConfig.useInternal})',
+    );
   }
 
   static String? get cachedToken => TokenManager().token;
-
   static String? get cachedRefreshToken => TokenManager().refreshToken;
 
   static Future<void> updateCachedTokens({
     required String token,
     required String refreshToken,
-  }) async {
-    await TokenManager().saveTokens(token: token, refreshToken: refreshToken);
-  }
+  }) => TokenManager().saveTokens(token: token, refreshToken: refreshToken);
 
-  static Future<void> updateCachedToken(String token) async {
-    await TokenManager().updateToken(token);
-  }
+  static Future<void> updateCachedToken(String token) =>
+      TokenManager().updateToken(token);
 
-  static Future<void> clearCachedTokens() async {
-    await TokenManager().clearTokens();
-  }
+  static Future<void> clearCachedTokens() => TokenManager().clearTokens();
 
   Future<String?> refreshToken() async {
-    final tokenManager = TokenManager();
+    final tm = TokenManager();
+    if (tm.isRefreshFailed) return null;
 
-    if (tokenManager.isRefreshFailed) {
-      return null;
-    }
-
-    final existingCompleter = tokenManager.refreshCompleter;
-    if (tokenManager.isRefreshing && existingCompleter != null) {
-      return existingCompleter.future;
-    }
+    final existing = tm.refreshCompleter;
+    if (tm.isRefreshing && existing != null) return existing.future;
 
     final completer = Completer<String?>();
-    tokenManager.setRefreshing(true, completer);
+    tm.setRefreshing(true, completer);
 
     try {
-      final refreshTokenValue = tokenManager.refreshToken;
-      if (refreshTokenValue == null || refreshTokenValue.isEmpty) {
-        tokenManager.markRefreshFailed();
-        await tokenManager.handleTokenExpired();
+      final rt = tm.refreshToken;
+      if (rt == null || rt.isEmpty) {
+        tm.markRefreshFailed();
+        await tm.handleTokenExpired();
         completer.complete(null);
         return null;
       }
 
-      final refreshDio = Dio(BaseOptions(
+      final resp = await Dio(BaseOptions(
         baseUrl: ApiConfig.baseUrl,
         connectTimeout: const Duration(seconds: 10),
         receiveTimeout: const Duration(seconds: 10),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-      ));
+        headers: {'Content-Type': 'application/json'},
+      )).post('/api/v1/auth/updateToken', data: {'refreshToken': rt});
 
-      final response = await refreshDio.post(
-        '/api/v1/auth/updateToken',
-        data: {'refreshToken': refreshTokenValue},
-      );
-
-      if (response.data['code'] == 200) {
-        final data = response.data['data'] as Map<String, dynamic>;
+      if (resp.data['code'] == 200) {
+        final data = resp.data['data'] as Map<String, dynamic>;
         final newToken = data['token'] as String;
         final newRefresh = data['refreshToken'] as String?;
-        await tokenManager.updateToken(
-          newToken,
-          refreshToken: newRefresh,
-        );
+        await tm.updateToken(newToken, refreshToken: newRefresh);
         completer.complete(newToken);
         return newToken;
-      } else if (response.data['code'] == 2000) {
-        tokenManager.markRefreshFailed();
-        await tokenManager.handleTokenExpired();
-        completer.complete(null);
-        return null;
-      } else {
-        tokenManager.markRefreshFailed();
-        completer.complete(null);
-        return null;
       }
-    } catch (e) {
-      tokenManager.markRefreshFailed();
+
+      tm.markRefreshFailed();
+      if (resp.data['code'] == 2000) await tm.handleTokenExpired();
+      completer.complete(null);
+      return null;
+    } catch (_) {
+      tm.markRefreshFailed();
       completer.complete(null);
       return null;
     } finally {
-      tokenManager.setRefreshing(false, null);
+      tm.setRefreshing(false, null);
       Future.delayed(const Duration(milliseconds: 100), () {
-        if (tokenManager.refreshCompleter == completer) {
-          tokenManager.setRefreshing(false, null);
-        }
+        if (tm.refreshCompleter == completer) tm.setRefreshing(false, null);
       });
     }
   }
 }
 
+/// ──────────────────────────────────────────
+///  AuthInterceptor：自动注入 Token + 响应 3000 刷新重试
+/// ──────────────────────────────────────────
 class AuthInterceptor extends Interceptor {
-  final HttpClient _httpClient;
-
-  AuthInterceptor(this._httpClient);
+  final HttpClient _http;
+  AuthInterceptor(this._http);
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final tokenManager = TokenManager();
-
-    if (options.headers.containsKey('Authorization')) {
-      return handler.next(options);
+    final tm = TokenManager();
+    if (!options.headers.containsKey('Authorization') && !tm.isRefreshFailed) {
+      final token = tm.token;
+      if (token != null && token.isNotEmpty) {
+        options.headers['Authorization'] = token;
+      }
     }
-
-    if (tokenManager.isRefreshFailed) {
-      return handler.next(options);
-    }
-
-    final token = tokenManager.token;
-
-    if (token != null && token.isNotEmpty) {
-      options.headers['Authorization'] = token;
-    }
-
-    return handler.next(options);
+    handler.next(options);
   }
 
   @override
   void onResponse(Response response, ResponseInterceptorHandler handler) async {
-    final tokenManager = TokenManager();
-
     if (response.data is Map && response.data['code'] == 3000) {
-      if (tokenManager.isRefreshFailed) {
-        return handler.next(response);
-      }
-
-      final newToken = await _httpClient.refreshToken();
-      if (newToken != null) {
-        try {
-          final options = response.requestOptions;
-          options.headers['Authorization'] = newToken;
-          final retryResponse = await _httpClient.dio.fetch(options);
-          return handler.next(retryResponse);
-        } catch (e) {
-          return handler.next(response);
+      final tm = TokenManager();
+      if (!tm.isRefreshFailed) {
+        final newToken = await _http.refreshToken();
+        if (newToken != null) {
+          try {
+            response.requestOptions.headers['Authorization'] = newToken;
+            final retry = await _http.dio.fetch(response.requestOptions);
+            return handler.next(retry);
+          } catch (_) {}
         }
-      } else {
       }
     }
-
-    return handler.next(response);
+    handler.next(response);
   }
 }
 
+/// ──────────────────────────────────────────
+///  RetryInterceptor：网络错误 / 5xx 自动重试
+/// ──────────────────────────────────────────
 class RetryInterceptor extends Interceptor {
   final Dio dio;
   final int retries;
@@ -209,42 +166,79 @@ class RetryInterceptor extends Interceptor {
     required this.dio,
     this.retries = 3,
     this.retryDelays = const [
-      Duration(seconds: 1),
-      Duration(seconds: 2),
-      Duration(seconds: 3),
+      Duration(seconds: 1), Duration(seconds: 2), Duration(seconds: 3),
     ],
   });
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    final extra = err.requestOptions.extra;
-    final retryCount = extra['retryCount'] as int? ?? 0;
-
-    if (retryCount < retries && _shouldRetry(err)) {
-      extra['retryCount'] = retryCount + 1;
-
-      final delay = retryCount < retryDelays.length
-          ? retryDelays[retryCount]
-          : retryDelays.last;
-
-      await Future.delayed(delay);
-
+    final count = err.requestOptions.extra['retryCount'] as int? ?? 0;
+    if (count < retries && _shouldRetry(err)) {
+      err.requestOptions.extra['retryCount'] = count + 1;
+      await Future.delayed(
+        count < retryDelays.length ? retryDelays[count] : retryDelays.last,
+      );
       try {
-        final response = await dio.fetch(err.requestOptions);
-        return handler.resolve(response);
+        return handler.resolve(await dio.fetch(err.requestOptions));
       } on DioException catch (e) {
         return super.onError(e, handler);
       }
     }
-
-    return super.onError(err, handler);
+    super.onError(err, handler);
   }
 
-  bool _shouldRetry(DioException err) {
-    return err.type == DioExceptionType.connectionTimeout ||
-        err.type == DioExceptionType.sendTimeout ||
-        err.type == DioExceptionType.receiveTimeout ||
-        err.type == DioExceptionType.connectionError ||
-        (err.response?.statusCode != null && err.response!.statusCode! >= 500);
+  bool _shouldRetry(DioException e) =>
+      e.type == DioExceptionType.connectionTimeout ||
+      e.type == DioExceptionType.sendTimeout ||
+      e.type == DioExceptionType.receiveTimeout ||
+      e.type == DioExceptionType.connectionError ||
+      (e.response?.statusCode != null && e.response!.statusCode! >= 500);
+}
+
+/// ──────────────────────────────────────────
+///  DomainFallbackInterceptor：运行时域名切换
+///
+///  启动时由 [ApiConfig.detectNetwork] 确定内/外网。
+///  运行中如果当前域名连接失败，自动切到另一个。
+/// ──────────────────────────────────────────
+class DomainFallbackInterceptor extends Interceptor {
+  final Dio _dio;
+
+  DomainFallbackInterceptor(this._dio);
+
+  @override
+  void onError(DioException err, ErrorInterceptorHandler handler) {
+    final isConnFail =
+        err.type == DioExceptionType.connectionTimeout ||
+        err.type == DioExceptionType.connectionError;
+
+    if (isConnFail && err.requestOptions.extra['fallbackTried'] != true) {
+      final fallbackUrl = ApiConfig.fallbackBaseUrl;
+      LoggerService.instance.logDebug(
+        '[DomainFallback] ${err.requestOptions.baseUrl} 不通，切 $fallbackUrl',
+      );
+
+      final opts = err.requestOptions;
+      opts.baseUrl = fallbackUrl;
+      opts.extra['fallbackTried'] = true;
+
+      _dio.fetch(opts).then(
+        (resp) {
+          ApiConfig.useInternal = !ApiConfig.useInternal;
+          handler.resolve(resp);
+        },
+        onError: (dynamic e) => handler.next(
+          e is DioException
+              ? e
+              : DioException(
+                  requestOptions: opts,
+                  error: e,
+                  type: DioExceptionType.connectionError,
+                ),
+        ),
+      );
+      return;
+    }
+    handler.next(err);
   }
 }

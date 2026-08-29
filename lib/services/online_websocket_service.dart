@@ -61,11 +61,12 @@ class OnlineWebSocketService {
     return _clientId!;
   }
 
-/// 根据 ApiConfig 的 HTTPS 设置自动选择 ws/wss
+/// 根据 ApiConfig 自动选择 ws/wss
   String _buildUrl(String vid, String clientId, String? rid) {
-    final protocol = ApiConfig.httpsEnabled ? 'wss' : 'ws';
-    final base = '$protocol://${ApiConfig.host}:${ApiConfig.port}'
-        '/api/v1/online/video?vid=$vid&clientId=$clientId';
+    final wsScheme = ApiConfig.httpsEnabled ? 'wss' : 'ws';
+    // 从 baseUrl 转换 http(s) → ws(s)
+    final baseUrl = ApiConfig.baseUrl.replaceFirst(RegExp(r'^https?'), wsScheme);
+    final base = '$baseUrl/api/v1/online/video?vid=$vid&clientId=$clientId';
     if (rid == null || rid.isEmpty) return base;
     return '$base&rid=${Uri.encodeQueryComponent(rid)}';
   }

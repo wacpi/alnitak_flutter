@@ -60,6 +60,12 @@ class VideoStreamService {
     return _manifestCache[key]!;
   }
 
+  /// 强制清除指定 resourceId 的 manifest 缓存，下次 [getDashManifest] 会重新请求
+  void clearManifestCache(Object resourceId) {
+    _manifestCache.remove('${resourceId}_p');
+    _manifestCache.remove('${resourceId}_b');
+  }
+
   /// 实际的 manifest 请求逻辑（MPD → JSON → m3u8 三级回退）
   Future<DashManifest> _fetchDashManifest(Object resourceId) async {
     // 1) MPD 优先（单次请求返回所有清晰度）

@@ -1,72 +1,71 @@
+import 'dart:async';
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// API 配置
 ///
-/// 统一管理 API / 分享地址，支持默认值 + SharedPreferences 覆盖。
+/// 启动时探测 ayypd.cn：有延迟反馈且返回数据 → 内网优先；
+/// 超时或失败 → 使用外网 acgkiss.com。分享地址联动。
 class ApiConfig {
   ApiConfig._();
 
-  // ── 持久化键 ──
+  // ── 内网地址（默认优先） ──
+  static const String internalHost = 'anime.ayypd.cn';
+  static const int internalPortHttp = 9000;
+  static const int internalPortHttps = 9001;
+  static const int internalSharePort = 3000;
 
-  static const String _httpsEnabledKey = 'https_enabled';
-  static const String _hostOverrideKey = 'api_host_override';
-  static const String _portOverrideKey = 'api_port_override';
-
-  // ── 默认值 ──
-
-  static const String defaultHost = 'anime.ayypd.cn';
-  static const int defaultPortHttp = 9000;
-  static const int defaultPortHttps = 9001;
-  static const String defaultShareHost = 'anime.ayypd.cn';
-  static const int defaultSharePort = 3000;
-  static const bool defaultShareHttps = true;
+  // ── 外网地址 ──
+  static const String externalHost = 'api.acgkiss.com';
+  static const int externalPortHttp = 80;
+  static const int externalPortHttps = 443;
+  static const String externalShareHost = 'www.acgkiss.com';
 
   // ── 运行时状态 ──
-
   static bool _httpsEnabled = true;
-  static String? _hostOverride;
-  static int? _portOverride;
 
-  // ── 公开 getter ──
+  /// true = 内网 ayypd, false = 外网 acgkiss
+  static bool useInternal = true;
 
-  static String get host => _hostOverride ?? defaultHost;
-  static int get port =>
-      _portOverride ?? (_httpsEnabled ? defaultPortHttps : defaultPortHttp);
   static bool get httpsEnabled => _httpsEnabled;
-  static String get shareHost => defaultShareHost;
-  static int get sharePort => defaultSharePort;
+
+  static String get baseUrl {
+    if (useInternal) {
+      return _buildUrl(
+        https: _httpsEnabled,
+        host: internalHost,
+        port: _httpsEnabled ? internalPortHttps : internalPortHttp,
+      );
+    }
+    return _buildUrl(
+      https: _httpsEnabled,
+      host: externalHost,
+      port: _httpsEnabled ? externalPortHttps : externalPortHttp,
+    );
+  }
+
+  /// 分享地址（跟随当前网络）
+  static String getShareUrl(String path) {
+    final base = useInternal
+        ? _buildUrl(
+            https: _httpsEnabled,
+            host: internalHost,
+            port: internalSharePort,
+          )
+        : _buildUrl(
+            https: _httpsEnabled,
+            host: externalShareHost,
+            port: _httpsEnabled ? externalPortHttps : externalPortHttp,
+          );
+    final cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    return '$base/$cleanPath';
+  }
 
   // ── 初始化 ──
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _httpsEnabled = prefs.getBool(_httpsEnabledKey) ?? true;
-    final savedHost = prefs.getString(_hostOverrideKey);
-    _hostOverride = (savedHost != null && savedHost.isNotEmpty) ? savedHost : null;
-    final savedPort = prefs.getInt(_portOverrideKey);
-    _portOverride = (savedPort != null && savedPort > 0) ? savedPort : null;
-  }
-
-  // ── 设置方法 ──
-
-  static Future<void> setHostPortOverride({String? host, int? port}) async {
-    final prefs = await SharedPreferences.getInstance();
-    if (host != null) {
-      _hostOverride = host.isEmpty ? null : host;
-      if (_hostOverride == null) {
-        await prefs.remove(_hostOverrideKey);
-      } else {
-        await prefs.setString(_hostOverrideKey, _hostOverride!);
-      }
-    }
-    if (port != null) {
-      _portOverride = port <= 0 ? null : port;
-      if (_portOverride == null) {
-        await prefs.remove(_portOverrideKey);
-      } else {
-        await prefs.setInt(_portOverrideKey, _portOverride!);
-      }
-    }
   }
 
   static Future<void> setHttpsEnabled(bool enabled) async {
@@ -75,25 +74,41 @@ class ApiConfig {
     await prefs.setBool(_httpsEnabledKey, enabled);
   }
 
-  // ── URL 构造 ──
+  // ── 内网探测 ──
 
-  static String get baseUrl => _buildUrl(
+  /// 探测 ayypd.cn：3s 内有响应 → 内网，否则外网
+  static Future<void> detectNetwork() async {
+    try {
+      final url = _buildUrl(
         https: _httpsEnabled,
-        host: host,
-        port: port,
+        host: internalHost,
+        port: _httpsEnabled ? internalPortHttps : internalPortHttp,
       );
-
-  static String getShareUrl(String path) {
-    final base = _buildUrl(
-      https: defaultShareHttps,
-      host: shareHost,
-      port: sharePort,
-    );
-    final cleanPath = path.startsWith('/') ? path.substring(1) : path;
-    return '$base/$cleanPath';
+      final dio = Dio(BaseOptions(
+        baseUrl: url,
+        connectTimeout: const Duration(seconds: 3),
+        receiveTimeout: const Duration(seconds: 3),
+      ));
+      final resp = await dio.get('/api/v1/auth/ping');
+      useInternal = resp.statusCode == 200;
+    } catch (_) {
+      useInternal = false;
+    }
   }
 
-  /// 构造 URL，标准端口（http:80 / https:443）自动省略
+  /// 当前域名不通时的备选地址
+  static String get fallbackBaseUrl {
+    return _buildUrl(
+      https: _httpsEnabled,
+      host: useInternal ? externalHost : internalHost,
+      port: useInternal
+          ? (_httpsEnabled ? externalPortHttps : externalPortHttp)
+          : (_httpsEnabled ? internalPortHttps : internalPortHttp),
+    );
+  }
+
+  // ── URL 构造 ──
+
   static String _buildUrl({
     required bool https,
     required String host,
@@ -103,4 +118,6 @@ class ApiConfig {
     final isDefaultPort = (https && port == 443) || (!https && port == 80);
     return isDefaultPort ? '$protocol://$host' : '$protocol://$host:$port';
   }
+
+  static const String _httpsEnabledKey = 'https_enabled';
 }

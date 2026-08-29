@@ -9,7 +9,8 @@
 
     <!-- 针对特定域名的配置 -->
     <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">api.acgkiss.com</domain>
+        <domain includeSubdomains="true">www.acgkiss.com</domain>
         <domain includeSubdomains="true">anime.ayypd.cn</domain>
-        <domain includeSubdomains="true">124.167.187.180</domain>
     </domain-config>
 </network-security-config>

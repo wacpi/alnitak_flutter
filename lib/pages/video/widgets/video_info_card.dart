@@ -158,13 +158,13 @@ class _VideoInfoCardState extends State<VideoInfoCard> {
                               _isExpanded ? '收起' : '展开',
                               style: TextStyle(
                                 fontSize: 13,
-                                color: Theme.of(context).primaryColor,
+                                color: colors.accentColor,
                               ),
                             ),
                             Icon(
                               _isExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
                               size: 16,
-                              color: Theme.of(context).primaryColor,
+                              color: colors.accentColor,
                             ),
                           ],
                         ),

@@ -152,6 +152,10 @@ class VideoPlayerController extends ChangeNotifier {
   static const String _preferredQualityKey = 'preferred_video_quality_display_name';
   static const String _loopModeKey = 'video_loop_mode';
   static const String _backgroundPlayKey = 'background_play_enabled';
+  /// DASH MPD 定时续签提前量（ms）：TTL 到期前 30 分钟触发
+  static const int _dashRefreshAheadMs = 30 * 60 * 1000;
+  /// DASH OSS 签名 URL 有效期（ms）：24h
+  static const int _dashOssUrlTtlMs = 24 * 60 * 60 * 1000;
 
   // ===========================================================================
   // 5. 各种订阅与定时器
@@ -170,6 +174,8 @@ class VideoPlayerController extends ChangeNotifier {
   Timer? _stalledTimer;
   Timer? _seekTimer;
   Timer? _bufferingShowTimer;
+  Timer? _dashRefreshTimer;
+  bool _dashTokenRefreshed = false;
 
 
   VideoPlayerController();
@@ -205,6 +211,7 @@ class VideoPlayerController extends ChangeNotifier {
       _userIntendedPosition = Duration(seconds: initialPosition?.toInt() ?? 0);
       _hasPlaybackStarted = false;
       _hasTriggeredCompletion = false;
+      _dashTokenRefreshed = false;
 
       // 预设总时长，避免 duration 就绪前进度条闪跳
       if (duration != null && duration > 0) {
@@ -420,6 +427,8 @@ class VideoPlayerController extends ChangeNotifier {
       isLoading.value = false;
       isPlayerInitialized.value = true;
       _armPlaybackPositionGuard(seekTo);
+
+      _startDashRefreshTimer();
 
       if (shouldPlayAfterStable && !_isDisposed) {
         await _waitForVideoReadyBeforePlay(sessionId);
@@ -834,6 +843,15 @@ class VideoPlayerController extends ChangeNotifier {
         if (error.isEmpty) return;
         _logger.logDebug('播放错误: $error');
 
+        // OSS 签名过期（HTTP 403 / Access Denied）→ MPD 续签
+        if (error.contains('403') || error.contains('Access Denied') ||
+            error.contains('Forbidden')) {
+          _playbackLog('[DASH] 检测到 403，触发 MPD 续签');
+          _dashTokenRefreshed = false;
+          _refreshDashManifest();
+          return;
+        }
+
         if (error.startsWith('tcp: ') || error.startsWith('Failed to open ') ||
             error.startsWith('Can not open external file ')) {
           Future.delayed(const Duration(seconds: 3), () {
@@ -880,6 +898,8 @@ class VideoPlayerController extends ChangeNotifier {
     _seekTimer = null;
     _bufferingShowTimer?.cancel();
     _bufferingShowTimer = null;
+    _dashRefreshTimer?.cancel();
+    _dashRefreshTimer = null;
   }
 
   // ===========================================================================
@@ -1175,6 +1195,67 @@ class VideoPlayerController extends ChangeNotifier {
     if (_isDisposed) return;
 
     await setDataSource(dataSource, seekTo: position.inSeconds > 0 ? position : Duration.zero, autoPlay: true);
+  }
+
+  // ──────────────────────────────────────────────
+  //  DASH MPD 定时续签
+  // ──────────────────────────────────────────────
+
+  /// 启动 MPD 定时续签：在 OSS 签名 URL 过期前 30 分钟重新拉取 MPD 并切换源。
+  void _startDashRefreshTimer() {
+    _dashRefreshTimer?.cancel();
+    _dashRefreshTimer = null;
+    if (!_supportsDash || _currentResourceId == null) return;
+    final delay = Duration(milliseconds: _dashOssUrlTtlMs - _dashRefreshAheadMs);
+    _dashRefreshTimer = Timer(delay, _onDashRefreshTimerTick);
+    _playbackLog('[DASH] 定时续签已启动, ${delay.inMinutes}min 后触发');
+  }
+
+  Future<void> _onDashRefreshTimerTick() async {
+    if (_isDisposed || _player == null || _currentResourceId == null) return;
+    _playbackLog('[DASH] 定时续签触发');
+    try {
+      final currentPos = _player!.state.position;
+      _streamService.clearManifestCache(_currentResourceId!);
+      _manifest = await _streamService.getDashManifest(_currentResourceId!);
+      if (_isDisposed || _player == null || _currentResourceId == null) return;
+      final quality = currentQuality.value;
+      if (quality == null) return;
+      final ds = _manifest!.getDataSource(quality);
+      if (ds == null) return;
+      await setDataSource(ds, seekTo: currentPos, autoPlay: true);
+      _dashTokenRefreshed = true;
+      _playbackLog('[DASH] 定时续签完成, currentTime=${currentPos.inSeconds}s');
+    } catch (e) {
+      _playbackLog('[DASH] 定时续签失败: $e');
+    }
+  }
+
+  /// MPD 续签（错误触发或强制），支持备份 OSS 切换
+  Future<void> _refreshDashManifest({bool useBackup = false}) async {
+    if (_isDisposed || _player == null || _currentResourceId == null) return;
+    if (_dashTokenRefreshed) return;
+    _playbackLog('[DASH] MPD 续签, backup=$useBackup');
+    try {
+      final currentPos = _player!.state.position;
+      _streamService.clearManifestCache(_currentResourceId!);
+      _manifest = await _streamService.getDashManifest(_currentResourceId!);
+      if (_isDisposed || _player == null || _currentResourceId == null) return;
+      final quality = currentQuality.value;
+      if (quality == null) return;
+      final ds = _manifest!.getDataSource(quality);
+      if (ds == null) return;
+      await setDataSource(ds, seekTo: currentPos, autoPlay: true);
+      _dashTokenRefreshed = true;
+      _playbackLog('[DASH] MPD 续签完成, currentTime=${currentPos.inSeconds}s');
+    } catch (e) {
+      _playbackLog('[DASH] MPD 续签失败: $e');
+      if (!useBackup) {
+        _playbackLog('[DASH] 切备用 OSS 重试');
+        NetworkLineSelector().forceSwitchLine();
+        await _refreshDashManifest(useBackup: true);
+      }
+    }
   }
 
   Future<DataSource> _getDataSourceForQuality(String quality) async {
