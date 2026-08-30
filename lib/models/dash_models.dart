@@ -89,15 +89,33 @@ class DashManifest {
   final bool supportsDash;
   final DateTime fetchedAt;
 
+  /// 原生 DASH MPD 完整 URL（含清晰度切换/音频分离等全部信息）。
+  ///
+  /// 非空时优先直接交给播放器加载整个 MPD，由 mpv 原生解析音视频与多清晰度，
+  /// 不再手工拆流。为 null 表示该 manifest 来自 JSON/m3u8 回退路径。
+  final String? mpdUrl;
+
   const DashManifest({
     required this.streams,
     required this.qualities,
     required this.supportsDash,
     required this.fetchedAt,
+    this.mpdUrl,
   });
 
   /// 从缓存获取指定清晰度的 DataSource
+  ///
+  /// 原生 MPD 模式下所有清晰度都指向同一个 MPD URL
+  /// （播放器通过 setVideoTrack 切换，无需重新加载）。
   DataSource? getDataSource(String quality) {
+    if (mpdUrl != null) {
+      return DataSource(
+        videoSource: mpdUrl!,
+        httpHeaders: _defaultHttpHeaders,
+        nativeMpd: true,
+      );
+    }
+
     final stream = streams[quality];
     if (stream == null) return null;
 

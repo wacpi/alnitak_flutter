@@ -17,10 +17,17 @@ class DataSource {
   /// HTTP 请求头
   final Map<String, String>? httpHeaders;
 
+  /// 是否为原生 DASH MPD 源（mpv 直接加载 MPD 整个清单，音视频由播放器原生解析）
+  ///
+  /// 为 true 时 [videoSource] 是完整 MPD URL，[audioSource] 恒为 null。
+  /// 播放器不再需要 audio-files 外挂音频，也不应使用音视频分离流的补丁参数。
+  final bool nativeMpd;
+
   const DataSource({
     required this.videoSource,
     this.audioSource,
     this.type = DataSourceType.network,
     this.httpHeaders,
+    this.nativeMpd = false,
   });
 }

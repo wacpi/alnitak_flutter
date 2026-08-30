@@ -148,10 +148,10 @@ class VideoPlayerController extends ChangeNotifier {
   static const int _spuriousBackwardJumpMs = 1600;
   /// 进度条上缓冲右端至少比当前播放位置多出这么多秒（对齐 YouTube 观感）
   static const int _minBufferedBarAheadSeconds = 3;
-  /// DASH MPD 定时续签提前量（ms）：TTL 到期前 30 分钟触发
+  /// DASH MPD 定时续签提前量（ms）：key TTL 到期前 30 分钟触发
   static const int _dashRefreshAheadMs = 30 * 60 * 1000;
-  /// DASH OSS 签名 URL 有效期（ms）：24h
-  static const int _dashOssUrlTtlMs = 24 * 60 * 60 * 1000;
+  /// DASH key 有效期（ms）：服务端 Redis 24h
+  static const int _dashKeyTtlMs = 24 * 60 * 60 * 1000;
 
   // ===========================================================================
   // 5. 各种订阅与定时器
@@ -347,13 +347,9 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _configurePlayerOnce(String decodeMode) async {
     if (_player == null) return;
 
-    // 音视频分离流防不同步，以音频为主，精确 seek
+    // 基础播放配置（与媒体源格式无关）
     _player!.setProperty('video-sync', 'audio');
-    _player!.setProperty('hr-seek', 'yes');
-    // mpv：非直播流起播前 demuxer 多读几秒，减轻首帧 unpause 时空窗
-    _player!.setProperty('demuxer-readahead-secs', '12');
     _player!.setProperty('interpolation', 'no');
-    _player!.setProperty('demuxer-max-back-bytes', '0');
     // fMP4 容错：discardcorrupt 丢弃损坏帧
     //_player!.setProperty('demuxer-lavf-o', 'fflags=+discardcorrupt');
     _player!.setProperty('network-timeout', '10');
@@ -376,6 +372,30 @@ class VideoPlayerController extends ChangeNotifier {
 
     await _syncLoopProperty();
     await _player!.setAudioTrack(AudioTrack.auto());
+  }
+
+  /// 按数据源模式设置 mpv 流相关属性（在 open 前调用）
+  ///
+  /// - 原生 DASH MPD：mpv 通过 libavformat 直接解析整个 MPD，
+  ///   音视频/多清晰度由播放器原生处理，恢复 mpv 默认 seek/缓存行为。
+  /// - 分离流回退（JSON/m3u8）：保持音视频分离流所需的补丁参数。
+  Future<void> _applyStreamModeProperties(bool nativeMpd) async {
+    if (_player == null) return;
+    try {
+      if (nativeMpd) {
+        // 恢复 mpv 默认：允许 demuxer 正常回读，seek 交给播放器原生精确处理
+        _player!.setProperty('hr-seek', 'default');
+        _player!.setProperty('demuxer-max-back-bytes', '-1');
+        _player!.setProperty('demuxer-readahead-secs', '10');
+      } else {
+        // 音视频分离流：精确 seek 以防 A/V 不同步，限制 demuxer 回读规避 PTS 回溯
+        _player!.setProperty('hr-seek', 'yes');
+        _player!.setProperty('demuxer-max-back-bytes', '0');
+        _player!.setProperty('demuxer-readahead-secs', '12');
+      }
+    } catch (e) {
+      _logger.logDebug('设置流模式属性失败: $e');
+    }
   }
 
   // ===========================================================================
@@ -415,14 +435,20 @@ class VideoPlayerController extends ChangeNotifier {
         'vid=$_currentVid part=$_currentPart',
       );
 
-      // 组装外挂音频参数 (DASH 音视频分离支持)
+      // 原生 DASH MPD：由 mpv 解析整个 MPD（音视频 + 多清晰度），
+      // 不需要 audio-files 外挂音频，也不应使用音视频分离流的补丁参数。
+      // 回退路径（JSON 分离流）仍按需组装外挂音频参数。
       Map<String, String>? extras;
-      if (dataSource.audioSource != null && dataSource.audioSource!.isNotEmpty) {
+      if (!dataSource.nativeMpd &&
+          dataSource.audioSource != null &&
+          dataSource.audioSource!.isNotEmpty) {
         final escapedAudio = Platform.isWindows
             ? dataSource.audioSource!.replaceAll(';', r'\;')
             : dataSource.audioSource!.replaceAll(':', r'\:');
         extras = {'audio-files': '"$escapedAudio"'};
       }
+
+      await _applyStreamModeProperties(dataSource.nativeMpd);
 
       await _player!.open(
         Media(
@@ -527,7 +553,12 @@ class VideoPlayerController extends ChangeNotifier {
       isSwitchingQuality.value = true;
 
       try {
-        await _reloadWithDataSource(quality, position);
+        // 原生 DASH MPD：直接切换视频轨（不重开播放器，无中断）
+        final switched = await _switchQualityViaTrack(quality);
+        if (!switched) {
+          // 回退路径（JSON/m3u8 分离流 或 track 未就绪）：重载数据源
+          await _reloadWithDataSource(quality, position);
+        }
         currentQuality.value = quality;
         await _savePreferredQuality(quality);
         _userIntendedPosition = position;
@@ -1099,18 +1130,52 @@ class VideoPlayerController extends ChangeNotifier {
     await setDataSource(dataSource, seekTo: position.inSeconds > 0 ? position : Duration.zero, autoPlay: true);
   }
 
+  /// 原生 DASH MPD：通过 mpv 视频轨切换清晰度（不重开播放器）
+  ///
+  /// 后端 dash-unified MPD 每个清晰度是一个独立 Representation，
+  /// mpv 原生加载后每条视频轨对应一个清晰度（按高度匹配）。
+  /// 匹配失败（track 未就绪 / MPD 未加载）返回 false，由调用方回退重载。
+  Future<bool> _switchQualityViaTrack(String quality) async {
+    final player = _player;
+    if (player == null || !_supportsDash || _manifest?.mpdUrl == null) {
+      return false;
+    }
+
+    final targetHeight = int.tryParse(quality);
+    if (targetHeight == null) return false;
+
+    final tracks = player.state.tracks.video;
+    if (tracks.isEmpty) return false;
+
+    // mpv 视频轨高度 = Representation 分辨率高度（如 1080p → demux-h=1080）
+    VideoTrack? match;
+    for (final t in tracks) {
+      if (t.id == 'no' || t.id == 'auto') continue;
+      if (t.h == targetHeight) {
+        match = t;
+        break;
+      }
+    }
+    if (match == null) return false;
+
+    await player.setVideoTrack(match);
+    _playbackLog('[DASH] 切换视频轨到清晰度 $quality (track id=${match.id}, h=${match.h})');
+    return true;
+  }
+
   // ──────────────────────────────────────────────
   //  DASH MPD 定时续签
   // ──────────────────────────────────────────────
 
-  /// 启动 MPD 定时续签：在 OSS 签名 URL 过期前 30 分钟重新拉取 MPD 并切换源。
+  /// 启动 MPD 定时续签：在服务端 key 过期前 30 分钟重新拉取 MPD 并切换源。
+  /// 长视频场景下 key 过期会导致后续请求 403 无限加载，必须在过期前重取。
   void _startDashRefreshTimer() {
     _dashRefreshTimer?.cancel();
     _dashRefreshTimer = null;
     if (!_supportsDash || _currentResourceId == null) return;
-    final delay = Duration(milliseconds: _dashOssUrlTtlMs - _dashRefreshAheadMs);
+    final delay = Duration(milliseconds: _dashKeyTtlMs - _dashRefreshAheadMs);
     _dashRefreshTimer = Timer(delay, _onDashRefreshTimerTick);
-    _playbackLog('[DASH] 定时续签已启动, ${delay.inMinutes}min 后触发');
+    _playbackLog('[DASH] 定时续签已启动, ${delay.inHours}h 后触发');
   }
 
   Future<void> _onDashRefreshTimerTick() async {

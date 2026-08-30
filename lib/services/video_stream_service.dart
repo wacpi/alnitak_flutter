@@ -82,7 +82,11 @@ class VideoStreamService {
 
       final xml = (response.data as String).trim();
       if (xml.startsWith('<?xml') || xml.startsWith('<MPD')) {
-        return _parseMpd(xml);
+        // 原生 MPD 直连：把完整 MPD URL 交给播放器，由 mpv 原生解析全部清晰度
+        final mpdUrl = '${ApiConfig.baseUrl}/api/v1/video/getVideoFile'
+            '?resourceId=$resourceId&format=dash-unified'
+            '${_useBackupOss ? '&backup=true' : ''}';
+        return _parseMpd(xml, mpdUrl: mpdUrl);
       }
     } catch (e) {
       if (kDebugMode) debugPrint('dash-unified failed, fallback JSON: $e');
@@ -270,7 +274,7 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
     );
   }
 
-  DashManifest _parseMpd(String xmlContent) {
+  DashManifest _parseMpd(String xmlContent, {String? mpdUrl}) {
     final document = XmlDocument.parse(xmlContent);
     final mpd = document.rootElement;
 
@@ -341,6 +345,7 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
       qualities: sortQualities(streams.keys.toList()),
       supportsDash: true,
       fetchedAt: DateTime.now(),
+      mpdUrl: mpdUrl,
     );
   }
 
