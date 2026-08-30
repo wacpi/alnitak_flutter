@@ -23,6 +23,77 @@ class SmartCacheManager extends CacheManager with ImageCacheManager {
     ),
   );
 
+  /// 覆写缓存流：命中缓存但文件为空/缺失时，清除索引并重新下载
+  ///
+  /// 修复切换 API 地址后出现 `Bad state: LocalFile...is empty`：
+  /// 下载中断/失败可能遗留 0 字节文件，直接解码会抛异常。
+  @override
+  Stream<FileResponse> getFileStream(
+    String url, {
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+  }) async* {
+    // 非进度模式才做命中校验，避免每次下载回调里重复 IO
+    if (!withProgress) {
+      await _removeInvalidCacheEntries([key ?? url]);
+    }
+    yield* super.getFileStream(
+      url,
+      key: key,
+      headers: headers,
+      withProgress: withProgress,
+    );
+  }
+
+  /// 覆写图片缓存流：resized 分支直接 yield 缓存 FileInfo，
+  /// 不会经过 [getFileStream]，需在此同样校验空文件
+  @override
+  Stream<FileResponse> getImageFile(
+    String url, {
+    String? key,
+    Map<String, String>? headers,
+    bool withProgress = false,
+    int? maxHeight,
+    int? maxWidth,
+  }) async* {
+    // 原 key 与可能的 resized key 都要校验
+    final baseKey = key ?? url;
+    final keysToCheck = <String>[baseKey];
+    if (maxHeight != null || maxWidth != null) {
+      var resizedKey = 'resized';
+      if (maxWidth != null) resizedKey += '_w$maxWidth';
+      if (maxHeight != null) resizedKey += '_h$maxHeight';
+      keysToCheck.add('${resizedKey}_$baseKey');
+    }
+    await _removeInvalidCacheEntries(keysToCheck);
+    yield* super.getImageFile(
+      url,
+      key: key,
+      headers: headers,
+      withProgress: withProgress,
+      maxHeight: maxHeight,
+      maxWidth: maxWidth,
+    );
+  }
+
+  /// 检查缓存命中项，文件不存在或为 0 字节时清除索引（触发重新下载）
+  Future<void> _removeInvalidCacheEntries(List<String> keys) async {
+    for (final cacheKey in keys) {
+      final cached = await getFileFromCache(cacheKey);
+      if (cached == null) continue;
+      try {
+        final file = cached.file;
+        final invalid = !await file.exists() || await file.length() == 0;
+        if (invalid) {
+          await removeFile(cacheKey);
+        }
+      } catch (_) {
+        // 校验失败不阻塞加载，交给父类逻辑处理
+      }
+    }
+  }
+
   /// 预加载图片到缓存
   /// 用于提前加载即将显示的图片
   static Future<void> preloadImage(String url) async {
