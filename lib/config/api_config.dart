@@ -33,7 +33,7 @@ class ApiConfig {
 
   // ── 运行时状态（由 init/切换方法写入） ──
   static bool _httpsEnabled = true;
-  static ApiEndpoint _endpoint = ApiEndpoint.internal;
+  static ApiEndpoint _endpoint = ApiEndpoint.external;
   static String _customBaseUrl = '';
 
   static bool get httpsEnabled => _httpsEnabled;
@@ -92,7 +92,7 @@ class ApiConfig {
     final name = prefs.getString(_endpointKey);
     _endpoint = ApiEndpoint.values.firstWhere(
       (e) => e.name == name,
-      orElse: () => ApiEndpoint.internal,
+      orElse: () => ApiEndpoint.external,
     );
     _customBaseUrl = prefs.getString(_customBaseUrlKey) ?? '';
   }

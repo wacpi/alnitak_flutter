@@ -44,7 +44,7 @@ class _SettingsPageState extends State<SettingsPage> {
   DateTime? _lastVersionTapAt;
   static const int _unlockTapCount = 7;
   static const Duration _versionTapWindow = Duration(milliseconds: 800);
-  ApiEndpoint _apiEndpoint = ApiEndpoint.internal;
+  ApiEndpoint _apiEndpoint = ApiEndpoint.external;
   String _customBaseUrl = '';
 
   // 缓存相关
