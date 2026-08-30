@@ -125,7 +125,9 @@ class VideoPlayerController extends ChangeNotifier {
 
   // 资源与元数据
   bool _supportsDash = true; 
-  DashManifest? _manifest; 
+  DashManifest? _manifest;
+  /// 当前 [_manifest] 所属线路（primary/backup），用于换线后强制重取
+  NetworkLine? _manifestLine; 
   String? _currentVid;
   
   // ignore: unused_field
@@ -244,6 +246,7 @@ class VideoPlayerController extends ChangeNotifier {
       if (_isDisposed || _currentResourceId != resourceId) return;
 
       _manifest = manifest;
+      _manifestLine = NetworkLineSelector().selectedLine;
       _supportsDash = manifest.supportsDash;
       availableQualities.value = manifest.qualities;
       if (manifest.qualities.isEmpty) throw Exception('没有可用的清晰度');
@@ -801,6 +804,8 @@ class VideoPlayerController extends ChangeNotifier {
 
       _player!.stream.buffer.listen((buffer) {
         if (!_isSessionActive(sessionId)) return;
+        // 切换清晰度期间冻结缓冲条：旧缓冲继续播放，新轨数据补满后才更新
+        if (isSwitchingQuality.value) return;
         _updateBufferedSecond();
       }),
 
@@ -1218,32 +1223,44 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _onDashRefreshTimerTick() async {
     if (_isDisposed || _player == null || _currentResourceId == null) return;
     _playbackLog('[DASH] 定时续签触发');
-    try {
-      final currentPos = _player!.state.position;
-      _streamService.clearManifestCache(_currentResourceId!);
-      _manifest = await _streamService.getDashManifest(_currentResourceId!);
+    await _enqueueOperation(() async {
       if (_isDisposed || _player == null || _currentResourceId == null) return;
-      final quality = currentQuality.value;
-      if (quality == null) return;
-      final ds = _manifest!.getDataSource(quality);
-      if (ds == null) return;
-      await setDataSource(ds, seekTo: currentPos, autoPlay: true);
-      _dashTokenRefreshed = true;
-      _playbackLog('[DASH] 定时续签完成, currentTime=${currentPos.inSeconds}s');
-    } catch (e) {
-      _playbackLog('[DASH] 定时续签失败: $e');
-    }
+      try {
+        final currentPos = _player!.state.position;
+        _streamService.clearManifestCache(_currentResourceId!);
+        _manifest = await _streamService.getDashManifest(_currentResourceId!);
+        _manifestLine = NetworkLineSelector().selectedLine;
+        if (_isDisposed || _player == null || _currentResourceId == null) return;
+        final quality = currentQuality.value;
+        if (quality == null) return;
+        final ds = _manifest!.getDataSource(quality);
+        if (ds == null) return;
+        await setDataSource(ds, seekTo: currentPos, autoPlay: true);
+        _dashTokenRefreshed = true;
+        _playbackLog('[DASH] 定时续签完成, currentTime=${currentPos.inSeconds}s');
+      } catch (e) {
+        _playbackLog('[DASH] 定时续签失败: $e');
+      }
+    });
   }
 
   /// MPD 续签（错误触发或强制），支持备份 OSS 切换
+  ///
+  /// 入队执行，与 changeQuality/_handleStalled/_onDashRefreshTimerTick 串行，
+  /// 避免并发 setDataSource 造成 removeListeners/open 交错。
   Future<void> _refreshDashManifest({bool useBackup = false}) async {
     if (_isDisposed || _player == null || _currentResourceId == null) return;
     if (_dashTokenRefreshed) return;
     _playbackLog('[DASH] MPD 续签, backup=$useBackup');
+    await _enqueueOperation(() => _doRefreshDashManifestInner(useBackup));
+  }
+
+  Future<void> _doRefreshDashManifestInner(bool useBackup) async {
     try {
       final currentPos = _player!.state.position;
       _streamService.clearManifestCache(_currentResourceId!);
       _manifest = await _streamService.getDashManifest(_currentResourceId!);
+      _manifestLine = NetworkLineSelector().selectedLine;
       if (_isDisposed || _player == null || _currentResourceId == null) return;
       final quality = currentQuality.value;
       if (quality == null) return;
@@ -1257,15 +1274,23 @@ class VideoPlayerController extends ChangeNotifier {
       if (!useBackup) {
         _playbackLog('[DASH] 切备用 OSS 重试');
         NetworkLineSelector().forceSwitchLine();
-        await _refreshDashManifest(useBackup: true);
+        await _doRefreshDashManifestInner(true);
       }
     }
   }
 
   Future<DataSource> _getDataSourceForQuality(String quality) async {
     if (_supportsDash && _manifest != null) {
-      if (_manifest!.isExpired && _currentResourceId != null) {
+      // 过期或线路已切换 → 清缓存强制重取；
+      // 不清缓存直接 getDashManifest 会命中 service 的同 key 旧 future（缓存永不失效）
+      final currentLine = NetworkLineSelector().selectedLine;
+      final lineChanged = currentLine != null &&
+          _manifestLine != null &&
+          _manifestLine != currentLine;
+      if (_currentResourceId != null && (_manifest!.isExpired || lineChanged)) {
+        _streamService.clearManifestCache(_currentResourceId!);
         _manifest = await _streamService.getDashManifest(_currentResourceId!);
+        _manifestLine = NetworkLineSelector().selectedLine;
       }
       final ds = _manifest!.getDataSource(quality);
       if (ds != null) return ds;
@@ -1547,6 +1572,7 @@ class VideoPlayerController extends ChangeNotifier {
     _connectivitySubscription = null;
 
     _manifest = null;
+    _manifestLine = null;
     _cacheService.cleanupAllTempCache();
 
     // DASH 定时续签 Timer 必须取消，否则测试/页面销毁会报 Timer pending
