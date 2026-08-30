@@ -76,8 +76,17 @@ class LoggerService {
   Future<void> writeMpvTrace(String line) async {
     try {
       if (_mpvTraceFile == null) {
-        final directory = await getApplicationDocumentsDirectory();
-        _mpvTraceFile = File('${directory.path}/$_mpvTraceFileName');
+        // 优先外部存储：/sdcard/Android/data/<pkg>/files/mpv_trace.log，
+        // adb shell 直接可读，无需 run-as（MIUI 上 run-as 会被 SELinux 拦截）。
+        try {
+          final ext = await getExternalStorageDirectory();
+          if (ext != null) {
+            _mpvTraceFile = File('${ext.path}/$_mpvTraceFileName');
+          }
+        } catch (_) {
+          // 无外部存储（如部分模拟器）时回退应用文档目录
+        }
+        _mpvTraceFile ??= File('${(await getApplicationDocumentsDirectory()).path}/$_mpvTraceFileName');
       }
 
       final file = _mpvTraceFile!;
