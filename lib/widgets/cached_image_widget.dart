@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -27,6 +28,9 @@ class SmartCacheManager extends CacheManager with ImageCacheManager {
   ///
   /// 修复切换 API 地址后出现 `Bad state: LocalFile...is empty`：
   /// 下载中断/失败可能遗留 0 字节文件，直接解码会抛异常。
+  ///
+  /// 注意：cached_network_image 走 getImageFile(withProgress: true) 时
+  /// 内部仍会调用本方法，因此校验必须在所有 withProgress 下都执行。
   @override
   Stream<FileResponse> getFileStream(
     String url, {
@@ -34,16 +38,22 @@ class SmartCacheManager extends CacheManager with ImageCacheManager {
     Map<String, String>? headers,
     bool withProgress = false,
   }) async* {
-    // 非进度模式才做命中校验，避免每次下载回调里重复 IO
-    if (!withProgress) {
-      await _removeInvalidCacheEntries([key ?? url]);
-    }
-    yield* super.getFileStream(
+    // 命中索引但文件为空/缺失 → 清除索引（触发重新下载）
+    await _removeInvalidCacheEntries([key ?? url]);
+    // 透传父类流，并校验每个最终产出的 FileInfo：
+    // 覆盖“新下载的文件本身就是空的”（服务器返回空 body）场景
+    await for (final response in super.getFileStream(
       url,
       key: key,
       headers: headers,
       withProgress: withProgress,
-    );
+    )) {
+      if (response is FileInfo && await _isEmptyOrMissing(response.file)) {
+        await removeFile(key ?? url);
+        throw StateError('下载的文件为空，无法作为图片加载: ${response.file.path}');
+      }
+      yield response;
+    }
   }
 
   /// 覆写图片缓存流：resized 分支直接 yield 缓存 FileInfo，
@@ -83,15 +93,19 @@ class SmartCacheManager extends CacheManager with ImageCacheManager {
       final cached = await getFileFromCache(cacheKey);
       if (cached == null) continue;
       try {
-        final file = cached.file;
-        final invalid = !await file.exists() || await file.length() == 0;
-        if (invalid) {
+        if (await _isEmptyOrMissing(cached.file)) {
           await removeFile(cacheKey);
         }
       } catch (_) {
         // 校验失败不阻塞加载，交给父类逻辑处理
       }
     }
+  }
+
+  /// 文件不存在或为 0 字节时返回 true（无法作为图片解码）
+  static Future<bool> _isEmptyOrMissing(File file) async {
+    if (!await file.exists()) return true;
+    return await file.length() == 0;
   }
 
   /// 预加载图片到缓存
