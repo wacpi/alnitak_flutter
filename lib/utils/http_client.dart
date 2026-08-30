@@ -26,7 +26,6 @@ class HttpClient {
 
     dio.interceptors.addAll([
       AuthInterceptor(this),
-      DomainFallbackInterceptor(dio),
       RetryInterceptor(
         dio: dio,
         retries: 10,
@@ -41,14 +40,17 @@ class HttpClient {
     ]);
   }
 
-  /// 启动时探测内网，确定使用 ayypd 还是 acgkiss
-  Future<void> init() async {
-    await ApiConfig.detectNetwork();
+  /// 校正 Dio baseUrl（ApiConfig.init 之后调用；切换端点后再次调用立即生效）
+  void refreshBaseUrl() {
     dio.options.baseUrl = ApiConfig.baseUrl;
     LoggerService.instance.logDebug(
-      '[HttpClient] baseUrl = ${ApiConfig.baseUrl} '
-      '(内网=${ApiConfig.useInternal})',
+      '[HttpClient] baseUrl = ${ApiConfig.baseUrl} (端点=${ApiConfig.endpoint.name})',
     );
+  }
+
+  /// 启动初始化：读取持久化配置后校正 baseUrl
+  Future<void> init() async {
+    refreshBaseUrl();
   }
 
   static String? get cachedToken => TokenManager().token;
@@ -162,10 +164,6 @@ class RetryInterceptor extends Interceptor {
   final int retries;
   final List<Duration> retryDelays;
 
-  /// 允许跨层重试叠加的请求（默认 false）：
-  /// 已被 DomainFallbackInterceptor 切换过的请求不再重试，避免两套重试叠加。
-  static const String skipAfterFallbackKey = 'skipRetryAfterFallback';
-
   RetryInterceptor({
     required this.dio,
     this.retries = 3,
@@ -176,12 +174,6 @@ class RetryInterceptor extends Interceptor {
 
   @override
   void onError(DioException err, ErrorInterceptorHandler handler) async {
-    // 域名已切换过的请求不再本层重试，防止与 DomainFallbackInterceptor 叠加
-    if (err.requestOptions.extra['fallbackTried'] == true &&
-        err.requestOptions.extra[skipAfterFallbackKey] != false) {
-      return super.onError(err, handler);
-    }
-
     // 允许请求通过 extra['maxRetries'] 覆盖全局重试次数
     final maxRetries = err.requestOptions.extra['maxRetries'] as int? ?? retries;
     final count = err.requestOptions.extra['retryCount'] as int? ?? 0;
@@ -205,52 +197,4 @@ class RetryInterceptor extends Interceptor {
       e.type == DioExceptionType.receiveTimeout ||
       e.type == DioExceptionType.connectionError ||
       (e.response?.statusCode != null && e.response!.statusCode! >= 500);
-}
-
-/// ──────────────────────────────────────────
-///  DomainFallbackInterceptor：运行时域名切换
-///
-///  启动时由 [ApiConfig.detectNetwork] 确定内/外网。
-///  运行中如果当前域名连接失败，自动切到另一个。
-/// ──────────────────────────────────────────
-class DomainFallbackInterceptor extends Interceptor {
-  final Dio _dio;
-
-  DomainFallbackInterceptor(this._dio);
-
-  @override
-  void onError(DioException err, ErrorInterceptorHandler handler) {
-    final isConnFail =
-        err.type == DioExceptionType.connectionTimeout ||
-        err.type == DioExceptionType.connectionError;
-
-    if (isConnFail && err.requestOptions.extra['fallbackTried'] != true) {
-      final fallbackUrl = ApiConfig.fallbackBaseUrl;
-      LoggerService.instance.logDebug(
-        '[DomainFallback] ${err.requestOptions.baseUrl} 不通，切 $fallbackUrl',
-      );
-
-      final opts = err.requestOptions;
-      opts.baseUrl = fallbackUrl;
-      opts.extra['fallbackTried'] = true;
-
-      _dio.fetch(opts).then(
-        (resp) {
-          ApiConfig.useInternal = !ApiConfig.useInternal;
-          handler.resolve(resp);
-        },
-        onError: (dynamic e) => handler.next(
-          e is DioException
-              ? e
-              : DioException(
-                  requestOptions: opts,
-                  error: e,
-                  type: DioExceptionType.connectionError,
-                ),
-        ),
-      );
-      return;
-    }
-    handler.next(err);
-  }
 }

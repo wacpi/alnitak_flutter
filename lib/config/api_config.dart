@@ -1,16 +1,25 @@
-import 'dart:async';
-import 'dart:io';
-import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+/// API 端点选择
+///
+/// 手动指定使用哪个后端地址（不再自动探测）：
+/// - [internal]：内网 anime.ayypd.cn
+/// - [external]：外网 api.acgkiss.com
+/// - [custom]：自定义地址（完整拼写，如 http://192.168.1.10:9000）
+enum ApiEndpoint {
+  internal,
+  external,
+  custom;
+}
 
 /// API 配置
 ///
-/// 启动时探测 ayypd.cn：有延迟反馈且返回数据 → 内网优先；
-/// 超时或失败 → 使用外网 acgkiss.com。分享地址联动。
+/// 端点由用户在设置页「开发者选项」中手动切换并持久化，
+/// 不再启动时探测内网（探测在无 DNS/弱网下不可靠）。
 class ApiConfig {
   ApiConfig._();
 
-  // ── 内网地址（默认优先） ──
+  // ── 内网地址 ──
   static const String internalHost = 'anime.ayypd.cn';
   static const int internalPortHttp = 9000;
   static const int internalPortHttps = 9001;
@@ -22,51 +31,70 @@ class ApiConfig {
   static const int externalPortHttps = 443;
   static const String externalShareHost = 'www.acgkiss.com';
 
-  // ── 运行时状态 ──
+  // ── 运行时状态（由 init/切换方法写入） ──
   static bool _httpsEnabled = true;
-
-  /// true = 内网 ayypd, false = 外网 acgkiss
-  static bool useInternal = true;
+  static ApiEndpoint _endpoint = ApiEndpoint.internal;
+  static String _customBaseUrl = '';
 
   static bool get httpsEnabled => _httpsEnabled;
 
+  static ApiEndpoint get endpoint => _endpoint;
+
+  static String get customBaseUrl => _customBaseUrl;
+
   static String get baseUrl {
-    if (useInternal) {
-      return _buildUrl(
-        https: _httpsEnabled,
-        host: internalHost,
-        port: _httpsEnabled ? internalPortHttps : internalPortHttp,
-      );
+    switch (_endpoint) {
+      case ApiEndpoint.internal:
+        return _buildUrl(
+          https: _httpsEnabled,
+          host: internalHost,
+          port: _httpsEnabled ? internalPortHttps : internalPortHttp,
+        );
+      case ApiEndpoint.external:
+        return _buildUrl(
+          https: _httpsEnabled,
+          host: externalHost,
+          port: _httpsEnabled ? externalPortHttps : externalPortHttp,
+        );
+      case ApiEndpoint.custom:
+        return _customBaseUrl;
     }
-    return _buildUrl(
-      https: _httpsEnabled,
-      host: externalHost,
-      port: _httpsEnabled ? externalPortHttps : externalPortHttp,
-    );
   }
 
-  /// 分享地址（跟随当前网络）
+  /// 分享地址（跟随当前端点）
   static String getShareUrl(String path) {
-    final base = useInternal
-        ? _buildUrl(
-            https: _httpsEnabled,
-            host: internalHost,
-            port: internalSharePort,
-          )
-        : _buildUrl(
-            https: _httpsEnabled,
-            host: externalShareHost,
-            port: _httpsEnabled ? externalPortHttps : externalPortHttp,
-          );
+    final String base;
+    switch (_endpoint) {
+      case ApiEndpoint.internal:
+        base = _buildUrl(
+          https: _httpsEnabled,
+          host: internalHost,
+          port: internalSharePort,
+        );
+      case ApiEndpoint.external:
+        base = _buildUrl(
+          https: _httpsEnabled,
+          host: externalShareHost,
+          port: _httpsEnabled ? externalPortHttps : externalPortHttp,
+        );
+      case ApiEndpoint.custom:
+        base = _customBaseUrl;
+    }
     final cleanPath = path.startsWith('/') ? path.substring(1) : path;
     return '$base/$cleanPath';
   }
 
-  // ── 初始化 ──
+  // ── 持久化 ──
 
   static Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _httpsEnabled = prefs.getBool(_httpsEnabledKey) ?? true;
+    final name = prefs.getString(_endpointKey);
+    _endpoint = ApiEndpoint.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => ApiEndpoint.internal,
+    );
+    _customBaseUrl = prefs.getString(_customBaseUrlKey) ?? '';
   }
 
   static Future<void> setHttpsEnabled(bool enabled) async {
@@ -75,71 +103,20 @@ class ApiConfig {
     await prefs.setBool(_httpsEnabledKey, enabled);
   }
 
-  // ── 内网探测 ──
-
-  /// 探测内网：DNS 有记录且 HTTP/HTTPS 端口可达 → 内网，否则外网
-  ///
-  /// 探测顺序：
-  /// 1. DNS 查 [internalHost]（hosts 未绑定则直接判定外网，不白等超时）
-  /// 2. 优先 HTTP:9000（开发环境明文端口，Android 已放行 cleartext）
-  /// 3. HTTP 不通再试 HTTPS:9001（自签证书场景兜底）
-  static Future<void> detectNetwork() async {
-    // 1. DNS 预查：hosts / DNS 里没有内网域名记录就直接外网
-    final hasInternalRecord = await _hasInternalDns();
-    if (!hasInternalRecord) {
-      useInternal = false;
-      return;
-    }
-
-    // 2/3. HTTP 优先探测，HTTPS 兜底
-    final httpOk = await _pingInternal(https: false);
-    if (httpOk) {
-      useInternal = true;
-      return;
-    }
-    final httpsOk = await _pingInternal(https: true);
-    useInternal = httpsOk;
+  static Future<void> setEndpoint(ApiEndpoint endpoint) async {
+    _endpoint = endpoint;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_endpointKey, endpoint.name);
   }
 
-  static Future<bool> _hasInternalDns() async {
-    try {
-      // 2s 超时：避免 WiFi 无 DNS 时长时间阻塞启动
-      final results = await InternetAddress.lookup(internalHost)
-          .timeout(const Duration(seconds: 2));
-      return results.isNotEmpty;
-    } catch (_) {
-      return false;
+  static Future<void> setCustomBaseUrl(String url) async {
+    var trimmed = url.trim();
+    while (trimmed.endsWith('/')) {
+      trimmed = trimmed.substring(0, trimmed.length - 1);
     }
-  }
-
-  static Future<bool> _pingInternal({required bool https}) async {
-    try {
-      final url = _buildUrl(
-        https: https,
-        host: internalHost,
-        port: https ? internalPortHttps : internalPortHttp,
-      );
-      final dio = Dio(BaseOptions(
-        baseUrl: url,
-        connectTimeout: const Duration(seconds: 3),
-        receiveTimeout: const Duration(seconds: 3),
-      ));
-      final resp = await dio.get('/api/v1/auth/ping');
-      return resp.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// 当前域名不通时的备选地址
-  static String get fallbackBaseUrl {
-    return _buildUrl(
-      https: _httpsEnabled,
-      host: useInternal ? externalHost : internalHost,
-      port: useInternal
-          ? (_httpsEnabled ? externalPortHttps : externalPortHttp)
-          : (_httpsEnabled ? internalPortHttps : internalPortHttp),
-    );
+    _customBaseUrl = trimmed;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_customBaseUrlKey, trimmed);
   }
 
   // ── URL 构造 ──
@@ -155,4 +132,6 @@ class ApiConfig {
   }
 
   static const String _httpsEnabledKey = 'https_enabled';
+  static const String _endpointKey = 'api_endpoint';
+  static const String _customBaseUrlKey = 'api_custom_base_url';
 }

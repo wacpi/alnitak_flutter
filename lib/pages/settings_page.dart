@@ -17,6 +17,7 @@ import '../theme/app_theme.dart';
 import '../theme/app_colors.dart';
 import '../widgets/cached_image_widget.dart';
 import '../config/api_config.dart';
+import '../utils/http_client.dart';
 
 /// 设置页面
 class SettingsPage extends StatefulWidget {
@@ -36,6 +37,15 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _httpsEnabled = false;
   bool _isLoggedIn = false;
   PackageInfo? _packageInfo;
+
+  // 开发者选项（连点版本号解锁）
+  bool _devUnlocked = false;
+  int _versionTapCount = 0;
+  DateTime? _lastVersionTapAt;
+  static const int _unlockTapCount = 7;
+  static const Duration _versionTapWindow = Duration(milliseconds: 800);
+  ApiEndpoint _apiEndpoint = ApiEndpoint.internal;
+  String _customBaseUrl = '';
 
   // 缓存相关
   String _cacheSize = '计算中...';
@@ -89,7 +99,31 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _backgroundPlayEnabled = prefs.getBool('background_play_enabled') ?? false;
       _httpsEnabled = ApiConfig.httpsEnabled;
+      _apiEndpoint = ApiConfig.endpoint;
+      _customBaseUrl = ApiConfig.customBaseUrl;
     });
+  }
+
+  /// 版本号连点解锁开发者选项
+  void _onVersionTap() {
+    final now = DateTime.now();
+    if (_lastVersionTapAt == null ||
+        now.difference(_lastVersionTapAt!) > _versionTapWindow) {
+      _versionTapCount = 1;
+    } else {
+      _versionTapCount++;
+    }
+    _lastVersionTapAt = now;
+
+    if (_versionTapCount >= _unlockTapCount && !_devUnlocked) {
+      setState(() => _devUnlocked = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('开发者选项已解锁'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   /// 加载应用信息
@@ -190,6 +224,130 @@ class _SettingsPageState extends State<SettingsPage> {
         const SnackBar(
           content: Text('HTTPS 设置已更改，重启应用后生效'),
           duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  /// 显示 API 端点选择对话框
+  Future<void> _showApiEndpointDialog() async {
+    final selected = await showDialog<ApiEndpoint>(
+      context: context,
+      builder: (context) {
+        final colors = _colors;
+        return AlertDialog(
+          title: const Text('API 地址'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildEndpointOption(
+                endpoint: ApiEndpoint.internal,
+                label: '内网',
+                desc: '${ApiConfig.internalHost}:${ApiConfig.internalPortHttp}',
+                colors: colors,
+              ),
+              _buildEndpointOption(
+                endpoint: ApiEndpoint.external,
+                label: '外网',
+                desc: ApiConfig.externalHost,
+                colors: colors,
+              ),
+              _buildEndpointOption(
+                endpoint: ApiEndpoint.custom,
+                label: '自定义',
+                desc: _customBaseUrl.isEmpty ? '未设置' : _customBaseUrl,
+                colors: colors,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (selected != null && selected != _apiEndpoint) {
+      if (selected == ApiEndpoint.custom) {
+        final customUrl = await _promptCustomBaseUrl();
+        if (customUrl == null || customUrl.trim().isEmpty) return;
+        await ApiConfig.setCustomBaseUrl(customUrl);
+      }
+      await ApiConfig.setEndpoint(selected);
+      if (mounted) {
+        setState(() {
+          _apiEndpoint = selected;
+          _customBaseUrl = ApiConfig.customBaseUrl;
+        });
+      }
+      _applyApiEndpointChange();
+    }
+  }
+
+  /// 端点单选项
+  Widget _buildEndpointOption({
+    required ApiEndpoint endpoint,
+    required String label,
+    required String desc,
+    required dynamic colors,
+  }) {
+    final isSelected = endpoint == _apiEndpoint;
+    return ListTile(
+      title: Text(label),
+      subtitle: Text(
+        desc,
+        style: TextStyle(
+          fontSize: 12,
+          color: colors.textSecondary,
+        ),
+      ),
+      trailing: isSelected
+          ? Icon(Icons.check, color: Theme.of(context).colorScheme.primary)
+          : null,
+      onTap: () => Navigator.pop(context, endpoint),
+    );
+  }
+
+  /// 输入自定义 API 地址
+  Future<String?> _promptCustomBaseUrl() async {
+    final controller = TextEditingController(text: _customBaseUrl);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('自定义 API 地址'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+            hintText: 'http://192.168.1.100:9000',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    return result;
+  }
+
+  /// 应用端点切换：刷新 HttpClient baseUrl 并提示
+  void _applyApiEndpointChange() {
+    HttpClient().refreshBaseUrl();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('API 地址已切换为 ${ApiConfig.baseUrl}'),
+          duration: const Duration(seconds: 3),
         ),
       );
     }
@@ -800,6 +958,81 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ], colors),
 
+          // 开发者选项（连点版本号解锁显示）
+          if (_devUnlocked) ...[
+            const SizedBox(height: 12),
+            _buildSectionHeader('开发者选项', colors),
+            _buildSettingsGroup([
+              // 当前 API 地址
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.dns_outlined, size: 24, color: colors.iconPrimary),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '当前 API 地址',
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: colors.textPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            ApiConfig.baseUrl,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colors.textSecondary,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _buildDivider(colors),
+              _buildTappableTile(
+                icon: Icons.swap_horiz_outlined,
+                title: '切换 API 地址',
+                value: _apiEndpoint == ApiEndpoint.internal
+                    ? '内网'
+                    : _apiEndpoint == ApiEndpoint.external
+                        ? '外网'
+                        : '自定义',
+                onTap: _showApiEndpointDialog,
+                colors: colors,
+              ),
+              _buildDivider(colors),
+              _buildTappableTile(
+                icon: Icons.http_outlined,
+                title: '自定义地址',
+                value: _customBaseUrl.isEmpty ? '未设置' : '已设置',
+                onTap: () async {
+                  final customUrl = await _promptCustomBaseUrl();
+                  if (customUrl == null || customUrl.trim().isEmpty) return;
+                  await ApiConfig.setCustomBaseUrl(customUrl);
+                  if (_apiEndpoint == ApiEndpoint.custom) {
+                    if (mounted) {
+                      setState(() => _customBaseUrl = ApiConfig.customBaseUrl);
+                    }
+                    _applyApiEndpointChange();
+                  } else {
+                    if (mounted) {
+                      setState(() => _customBaseUrl = ApiConfig.customBaseUrl);
+                    }
+                  }
+                },
+                colors: colors,
+              ),
+            ], colors),
+          ],
+
           const SizedBox(height: 12),
 
           // 存储管理
@@ -838,11 +1071,15 @@ class _SettingsPageState extends State<SettingsPage> {
           // 关于
           _buildSectionHeader('关于', colors),
           _buildSettingsGroup([
-            _buildInfoTile(
-              icon: Icons.info_outline,
-              title: 'App 版本',
-              value: _packageInfo?.version ?? '加载中...',
-              colors: colors,
+            InkWell(
+              onTap: _onVersionTap,
+              borderRadius: BorderRadius.circular(12),
+              child: _buildInfoTileBody(
+                icon: Icons.info_outline,
+                title: 'App 版本',
+                value: _packageInfo?.version ?? '加载中...',
+                colors: colors,
+              ),
             ),
             _buildDivider(colors),
             _buildInfoTile(
@@ -952,6 +1189,25 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 构建信息项
   Widget _buildInfoTile({
+    required IconData icon,
+    required String title,
+    required String value,
+    required dynamic colors,
+  }) {
+    return InkWell(
+      onTap: () {},
+      borderRadius: BorderRadius.circular(12),
+      child: _buildInfoTileBody(
+        icon: icon,
+        title: title,
+        value: value,
+        colors: colors,
+      ),
+    );
+  }
+
+  /// 信息项主体（供可点击包裹复用）
+  Widget _buildInfoTileBody({
     required IconData icon,
     required String title,
     required String value,
