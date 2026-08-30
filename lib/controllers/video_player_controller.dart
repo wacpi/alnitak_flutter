@@ -319,12 +319,21 @@ class VideoPlayerController extends ChangeNotifier {
       opt['ao'] = audioOutput;
       opt['autosync'] = '30';
     }
+    if (kDebugMode) {
+      // C 方案实证：提升内核/ffmpeg 日志级别，抓 DASH 分片打开、init 下载、seek 过程
+      // 关键日志（dashdec.c）：
+      //   AV_LOG_DEBUG   "Downloading an initialization section of size %PRI64d"
+      //   AV_LOG_VERBOSE "DASH request for url '%s', offset %PRI64d" / "DASH seek pos[..]"
+      // media-kit 的 MPVLogLevel 直接映射到 mpv_request_log_messages，
+      // 但 mpv 内部还有按模块的 msg-level 过滤，需显式放开 ffmpeg/lavf。
+      opt['msg-level'] = 'ffmpeg=debug,lavf=debug,cplayer=debug,demux=debug,status=no';
+    }
     final bufferSizeBytes = expandBuffer ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
     
     _player = await Player.create(
       configuration: PlayerConfiguration(
         bufferSize: bufferSizeBytes,
-        logLevel: kDebugMode ? MPVLogLevel.warn : MPVLogLevel.error,
+        logLevel: kDebugMode ? MPVLogLevel.trace : MPVLogLevel.error,
         options: opt,
       ),
     );
@@ -437,6 +446,9 @@ class VideoPlayerController extends ChangeNotifier {
         'setDataSource begin session=$sessionId seekTo=${seekTo.inSeconds}s play=$shouldPlayAfterStable '
         'vid=$_currentVid part=$_currentPart',
       );
+      _mpvTrace(
+        'setDataSource begin session=$sessionId seekTo=${seekTo.inSeconds}s vid=$_currentVid part=$_currentPart',
+      );
 
       // 原生 DASH MPD：由 mpv 解析整个 MPD（音视频 + 多清晰度），
       // 不需要 audio-files 外挂音频，也不应使用音视频分离流的补丁参数。
@@ -452,6 +464,8 @@ class VideoPlayerController extends ChangeNotifier {
       }
 
       await _applyStreamModeProperties(dataSource.nativeMpd);
+      final openSw = Stopwatch()..start();
+      _mpvTrace('player.open() begin (nativeMpd=${dataSource.nativeMpd})');
 
       await _player!.open(
         Media(
@@ -462,6 +476,8 @@ class VideoPlayerController extends ChangeNotifier {
         ),
         play: false,
       );
+      openSw.stop();
+      _mpvTrace('player.open() returned (${openSw.elapsedMilliseconds}ms)');
 
       if (!_isSessionActive(sessionId)) return;
 
@@ -861,6 +877,10 @@ class VideoPlayerController extends ChangeNotifier {
 
       _player!.stream.log.listen((log) {
         if (!_isSessionActive(sessionId)) return;
+        // C 方案实证：debug 全量落盘（含 lavf/ffmpeg 的 DASH 分片/init/seek 日志）
+        if (kDebugMode) {
+          _logger.writeMpvTrace('[mpv:${log.prefix}] ${log.text}');
+        }
         if (log.prefix == 'av_sync' || log.prefix == 'audio' || log.prefix == 'cplayer' ||
             log.text.contains('patients') || log.text.contains('A-V:') ||
             log.text.contains('sync') || log.text.contains('drop') ||
@@ -945,6 +965,13 @@ class VideoPlayerController extends ChangeNotifier {
     _logger.logDebug(message, tag: 'Playback');
   }
 
+  /// C 方案实证：播放链路关键事件写入 mpv_trace.log，用于与 mpv/ffmpeg 日志对齐分析
+  void _mpvTrace(String message) {
+    if (kDebugMode) {
+      _logger.writeMpvTrace('[APP] $message');
+    }
+  }
+
   void _resetPlaybackStates() {
     _bufferingShowTimer?.cancel();
     _bufferingShowTimer = null;
@@ -995,6 +1022,8 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   Future<void> _seekInternal(Duration position) async {
+    _mpvTrace('_seekInternal begin target=${position.inMilliseconds}ms');
+    final seekSw = Stopwatch()..start();
     await _seekBufferWaitIfNeeded();
 
     if (_player!.state.duration.inSeconds != 0) {
@@ -1003,7 +1032,10 @@ class VideoPlayerController extends ChangeNotifier {
       if (!_isDisposed && _player != null) {
         _armPlaybackPositionGuard(position);
       }
+      seekSw.stop();
+      _mpvTrace('_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration ready)');
     } else {
+      _mpvTrace('_seekInternal waiting duration ready (polling 200ms)');
       _seekTimer?.cancel();
       _seekTimer = Timer.periodic(const Duration(milliseconds: 200), (Timer t) async {
         if (_isDisposed || _player == null) {
@@ -1025,6 +1057,8 @@ class VideoPlayerController extends ChangeNotifier {
           } catch (e) {
             _logger.logWarning('seek 执行失败: $e');
           }
+          seekSw.stop();
+          _mpvTrace('_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration polling)');
           _isSeeking = false;
         }
       });
@@ -1059,6 +1093,11 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> _waitForVideoReadyBeforePlay(int sessionId) async {
     if (_player == null) return;
+    _mpvTrace(
+      '_waitForVideoReadyBeforePlay begin (w=${_player?.state.width}, '
+      'h=${_player?.state.height}, buf=${_player?.state.buffer.inMilliseconds}ms)',
+    );
+    final waitSw = Stopwatch()..start();
     final completer = Completer<void>();
     final subs = <StreamSubscription>[];
 
@@ -1084,11 +1123,20 @@ class VideoPlayerController extends ChangeNotifier {
     await completer.future;
     timeout.cancel();
     for (final sub in subs) { sub.cancel(); }
+    waitSw.stop();
+    _mpvTrace(
+      '_waitForVideoReadyBeforePlay done (${waitSw.elapsedMilliseconds}ms, '
+      'w=${_player?.state.width}, h=${_player?.state.height}, '
+      'buf=${_player?.state.buffer.inMilliseconds}ms)',
+    );
 
     if (_videoController != null && _isSessionActive(sessionId)) {
       try {
+        final frameSw = Stopwatch()..start();
         await _videoController!.waitUntilFirstFrameRendered
             .timeout(const Duration(milliseconds: 1200));
+        frameSw.stop();
+        _mpvTrace('waitUntilFirstFrameRendered done (${frameSw.elapsedMilliseconds}ms)');
       } catch (_) {
         // 首帧渲染超时是正常情况（软解/慢速网络），无须处理
       }

@@ -62,6 +62,42 @@ class LoggerService {
     }
   }
 
+  // ===========================================================================
+  // mpv 诊断日志（C 方案临时实证用）
+  // ===========================================================================
+  File? _mpvTraceFile;
+  static const String _mpvTraceFileName = 'mpv_trace.log';
+  static const int _maxMpvTraceFileSize = 30 * 1024 * 1024; // 30MB
+
+  /// 记录 mpv / 播放链路诊断日志到 mpv_trace.log（debug 包真机实证用时抓取）
+  ///
+  /// [line] 已带语义前缀（如 `[APP]` 或 `[mpv:prefix]`），此处只补时间戳并追加写入。
+  /// 不 gate kDebugMode：决定权在调用方。
+  Future<void> writeMpvTrace(String line) async {
+    try {
+      if (_mpvTraceFile == null) {
+        final directory = await getApplicationDocumentsDirectory();
+        _mpvTraceFile = File('${directory.path}/$_mpvTraceFileName');
+      }
+
+      final file = _mpvTraceFile!;
+      if (await file.exists()) {
+        final size = await file.length();
+        if (size > _maxMpvTraceFileSize) {
+          // 超限轮转：mpv_trace_old.log 覆盖旧归档
+          final old = File(file.path.replaceAll('.log', '_old.log'));
+          if (await old.exists()) await old.delete();
+          await file.rename(old.path);
+        }
+      }
+
+      final timestamp = DateFormat('HH:mm:ss.SSS').format(DateTime.now());
+      await file.writeAsString('[$timestamp] $line\n', mode: FileMode.append);
+    } catch (_) {
+      // 诊断日志写失败不影响主流程
+    }
+  }
+
   static const int _maxReportLength = 2000;
 
   // 日志上报节流：5 秒内只发一条，避免错误风暴时 HTTP 堵塞
