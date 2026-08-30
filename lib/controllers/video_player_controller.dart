@@ -1133,7 +1133,8 @@ class VideoPlayerController extends ChangeNotifier {
   /// 原生 DASH MPD：通过 mpv 视频轨切换清晰度（不重开播放器）
   ///
   /// 后端 dash-unified MPD 每个清晰度是一个独立 Representation，
-  /// mpv 原生加载后每条视频轨对应一个清晰度（按高度匹配）。
+  /// mpv 原生加载后每条视频轨对应一个清晰度。
+  /// quality 形如 "1920x1080_3000k_30"（WxH_码率_帧率）或旧格式 "720p"。
   /// 匹配失败（track 未就绪 / MPD 未加载）返回 false，由调用方回退重载。
   Future<bool> _switchQualityViaTrack(String quality) async {
     final player = _player;
@@ -1141,26 +1142,62 @@ class VideoPlayerController extends ChangeNotifier {
       return false;
     }
 
-    final targetHeight = int.tryParse(quality);
+    final targetHeight = _parseQualityHeight(quality);
     if (targetHeight == null) return false;
+
+    final targetFps = _parseQualityFps(quality);
 
     final tracks = player.state.tracks.video;
     if (tracks.isEmpty) return false;
 
-    // mpv 视频轨高度 = Representation 分辨率高度（如 1080p → demux-h=1080）
+    // mpv 视频轨高度 = Representation 文件实际高度（demux-h）：
+    // 横屏 "1920x1080_..." → 1080；竖屏 "1080x1920_..." → 1920（高边）
+    // 同高度可能存在多轨（如 1080p30 / 1080p60），按帧率取最优。
     VideoTrack? match;
     for (final t in tracks) {
       if (t.id == 'no' || t.id == 'auto') continue;
-      if (t.h == targetHeight) {
-        match = t;
-        break;
+      if (t.h != targetHeight) continue;
+      // 无帧率目标或当前轨无帧率时，采用首个匹配轨
+      if (targetFps == null || t.fps == null) {
+        match ??= t;
+        continue;
       }
+      // 帧率接近度优于当前候选才替换（取最接近目标帧率的轨道）
+      if (match == null) {
+        match = t;
+        continue;
+      }
+      final currentGap = (t.fps! - targetFps).abs();
+      final bestGap = match.fps != null ? (match.fps! - targetFps).abs() : double.infinity;
+      if (currentGap < bestGap) match = t;
     }
     if (match == null) return false;
 
     await player.setVideoTrack(match);
     _playbackLog('[DASH] 切换视频轨到清晰度 $quality (track id=${match.id}, h=${match.h})');
     return true;
+  }
+
+  /// 从清晰度字符串解析真实高度（匹配 mpv demux-h）
+  ///
+  /// 新格式 "1920x1080_3000k_30" → 1080；竖屏 "1080x1920_3000k_30" → 1920（高边）
+  /// 旧格式 "720p" → 720
+  static int? _parseQualityHeight(String quality) {
+    final parts = quality.split('_');
+    if (parts.isNotEmpty && parts[0].contains('x')) {
+      final dims = parts[0].split('x');
+      if (dims.length == 2) return int.tryParse(dims[1]);
+    }
+    final match = RegExp(r'^(\d+)p', caseSensitive: false).firstMatch(quality);
+    return match != null ? int.tryParse(match.group(1)!) : null;
+  }
+
+  /// 从清晰度字符串解析帧率（用于同高度多轨选择）
+  ///
+  /// "1920x1080_3000k_30" → 30；无帧率信息返回 null（此时按首个匹配轨切换）
+  static int? _parseQualityFps(String quality) {
+    final parts = quality.split('_');
+    return parts.length >= 3 ? int.tryParse(parts[2]) : null;
   }
 
   // ──────────────────────────────────────────────
