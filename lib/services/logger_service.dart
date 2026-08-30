@@ -73,7 +73,21 @@ class LoggerService {
   ///
   /// [line] 已带语义前缀（如 `[APP]` 或 `[mpv:prefix]`），此处只补时间戳并追加写入。
   /// 不 gate kDebugMode：决定权在调用方。
-  Future<void> writeMpvTrace(String line) async {
+  ///
+  /// 重要：所有写入经 [_mpvTraceQueue] 串行化。trace 级别下 mpv 日志高频触发，
+  /// 若直接并发 writeAsString(append) 会在字节级交错损坏行（曾实测：`done
+  /// (3333ms, duration` 后直接接下一行时间戳）。队列保证一次只有一个写入在途。
+  Future<void> _mpvTraceQueue = Future.value();
+
+  Future<void> writeMpvTrace(String line) {
+    // 折叠 mpv 文本内嵌换行，保证一行逻辑 = 一行物理（避免碎片行）。
+    final content = '${DateFormat('HH:mm:ss.SSS').format(DateTime.now())} '
+        '${line.replaceAll(RegExp(r'[\r\n]+'), ' ')}\n';
+    _mpvTraceQueue = _mpvTraceQueue.then((_) => _appendMpvTrace(content));
+    return _mpvTraceQueue;
+  }
+
+  Future<void> _appendMpvTrace(String content) async {
     try {
       if (_mpvTraceFile == null) {
         // 优先外部存储：/sdcard/Android/data/<pkg>/files/mpv_trace.log，
@@ -100,8 +114,7 @@ class LoggerService {
         }
       }
 
-      final timestamp = DateFormat('HH:mm:ss.SSS').format(DateTime.now());
-      await file.writeAsString('[$timestamp] $line\n', mode: FileMode.append);
+      await file.writeAsString(content, mode: FileMode.append);
     } catch (_) {
       // 诊断日志写失败不影响主流程
     }
