@@ -407,42 +407,71 @@ Future<void> _uploadVideo({String? title}) async {
 
 
   Future<void> _submit() async {
+    LoggerService.instance.logInfo(
+      '[视频投稿提交] 开始 vid=${widget.vid} editMode=$isEditMode',
+      tag: 'VideoSubmit',
+    );
+
     // 只在编辑模式下允许提交
     if (!isEditMode) {
+      LoggerService.instance.logWarning(
+        '[视频投稿提交] 非编辑模式直接提交，被拦截',
+        tag: 'VideoSubmit',
+      );
       _showError('上传模式请先上传视频');
       return;
     }
 
     if (!_formKey.currentState!.validate()) {
+      LoggerService.instance.logWarning(
+        '[视频投稿提交] 表单校验失败',
+        tag: 'VideoSubmit',
+      );
       return;
     }
 
     // 验证标签数量（至少3个）
     if (_tags.length < 3) {
+      LoggerService.instance.logWarning(
+        '[视频投稿提交] 标签数不足: ${_tags.length}<3',
+        tag: 'VideoSubmit',
+      );
       _showError('标签不能低于3个');
       return;
     }
 
     // 验证封面
     if (_coverFile == null && _coverUrl == null) {
+      LoggerService.instance.logWarning(
+        '[视频投稿提交] 未上传封面 coverFile=${_coverFile != null} coverUrl=$_coverUrl',
+        tag: 'VideoSubmit',
+      );
       _showError('请上传视频封面');
       return;
     }
 
     final partitionId = _selectedSubPartition?.id ?? _selectedParentPartition?.id;
     if (partitionId == null) {
+      LoggerService.instance.logWarning(
+        '[视频投稿提交] 未选择分区',
+        tag: 'VideoSubmit',
+      );
       _showError('请选择分区');
       return;
     }
+
+    LoggerService.instance.logInfo(
+      '[视频投稿提交] 校验通过 title=${_titleController.text.trim()} tags=$_tags partitionId=$partitionId',
+      tag: 'VideoSubmit',
+    );
 
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
+    String? coverUrl;
     try {
-      String? coverUrl;
-
 
       // 上传封面（如果有新选择的封面）
       if (_coverFile != null) {
@@ -465,6 +494,11 @@ Future<void> _uploadVideo({String? title}) async {
       final currentPartitionId = _resources.isNotEmpty && _resources[0].vid != null
           ? await _getCurrentPartitionId()
           : 0;
+
+      LoggerService.instance.logInfo(
+        '[视频投稿提交] currentPartitionId=$currentPartitionId coverUrl=$coverUrl',
+        tag: 'VideoSubmit',
+      );
 
 
       if (currentPartitionId == 0) {
@@ -505,7 +539,20 @@ Future<void> _uploadVideo({String? title}) async {
         SnackBar(content: Text(currentPartitionId == 0 ? '稿件发布成功，请等待审核' : '稿件更新成功，请等待审核')),
       );
       Navigator.pop(context, true);
-    } catch (e) {
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: '视频投稿提交失败',
+        error: e,
+        stackTrace: st,
+        context: {
+          'vid': widget.vid,
+          'title': _titleController.text.trim(),
+          'coverUrl': coverUrl,
+          'tags': _tags,
+          'partitionId': partitionId,
+          'resources': _resources.map((r) => r.toJson()).toList(),
+        },
+      );
 
       // 【新增】投稿失败后也清理临时文件
       await _cleanupTempFiles();
@@ -524,6 +571,10 @@ Future<void> _uploadVideo({String? title}) async {
   Future<int> _getCurrentPartitionId() async {
     try {
       final videoStatus = await VideoSubmitApiService.getVideoStatus(widget.vid!);
+      LoggerService.instance.logInfo(
+        '[视频投稿提交] getVideoStatus 返回 partitionId=${videoStatus.partitionId}',
+        tag: 'VideoSubmit',
+      );
       return videoStatus.partitionId;
     } catch (e) {
       LoggerService.instance.logWarning('获取视频分区ID失败: $e', tag: 'VideoUpload');

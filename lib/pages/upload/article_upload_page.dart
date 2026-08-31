@@ -152,28 +152,50 @@ class _ArticleUploadPageState extends State<ArticleUploadPage> {
   }
 
   Future<void> _submit() async {
+    LoggerService.instance.logInfo(
+      '[文章投稿提交] 开始 aid=${widget.aid} editMode=$isEditMode',
+      tag: 'ArticleSubmit',
+    );
+
     if (!_formKey.currentState!.validate()) {
+      LoggerService.instance.logWarning(
+        '[文章投稿提交] 表单校验失败',
+        tag: 'ArticleSubmit',
+      );
       return;
     }
 
     if (_coverFile == null && !isEditMode) {
+      LoggerService.instance.logWarning(
+        '[文章投稿提交] 未选择封面图片',
+        tag: 'ArticleSubmit',
+      );
       _showError('请选择封面图片');
       return;
     }
 
     final partitionId = _selectedSubPartition?.id ?? _selectedParentPartition?.id;
     if (partitionId == null) {
+      LoggerService.instance.logWarning(
+        '[文章投稿提交] 未选择分区',
+        tag: 'ArticleSubmit',
+      );
       _showError('请选择分区');
       return;
     }
+
+    LoggerService.instance.logInfo(
+      '[文章投稿提交] 校验通过 title=${_titleController.text.trim()} partitionId=$partitionId',
+      tag: 'ArticleSubmit',
+    );
 
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
+    String? coverUrl;
     try {
-      String? coverUrl;
 
       // 上传封面（如果有新选择的封面）
       if (_coverFile != null) {
@@ -224,7 +246,18 @@ class _ArticleUploadPageState extends State<ArticleUploadPage> {
         );
         Navigator.pop(context, true);
       }
-    } catch (e) {
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: '文章投稿提交失败',
+        error: e,
+        stackTrace: st,
+        context: {
+          'aid': widget.aid,
+          'title': _titleController.text.trim(),
+          'coverUrl': coverUrl,
+          'partitionId': partitionId,
+        },
+      );
       // 【新增】失败后也清理临时文件
       await _cleanupTempFiles();
 

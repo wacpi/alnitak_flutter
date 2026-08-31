@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../models/upload_article.dart';
 import '../utils/http_client.dart';
+import 'logger_service.dart';
 
 /// 文章投稿API服务
 class ArticleSubmitApiService {
@@ -9,9 +10,18 @@ class ArticleSubmitApiService {
   /// 上传文章（提交文章信息）
   static Future<int> uploadArticle(UploadArticle article) async {
     try {
+      LoggerService.instance.logInfo(
+        '[uploadArticle] 请求 body: ${article.toJson()}',
+        tag: 'ArticleSubmit',
+      );
       final response = await _dio.post(
         '/api/v1/article/uploadArticleInfo',
         data: article.toJson(),
+      );
+
+      LoggerService.instance.logInfo(
+        '[uploadArticle] 响应 code=${response.data?['code']} msg=${response.data?['msg']}',
+        tag: 'ArticleSubmit',
       );
 
       if (response.data['code'] == 200) {
@@ -19,7 +29,24 @@ class ArticleSubmitApiService {
       } else {
         throw Exception(response.data['msg'] ?? '上传文章失败');
       }
-    } catch (e) {
+    } on DioException catch (e, st) {
+      LoggerService.instance.logApiError(
+        apiName: 'uploadArticle',
+        url: '/api/v1/article/uploadArticleInfo',
+        statusCode: e.response?.statusCode,
+        responseBody: e.response?.data?.toString(),
+        error: e,
+        stackTrace: st,
+        requestParams: article.toJson(),
+      );
+      throw Exception('上传失败: $e');
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: 'uploadArticle 失败',
+        error: e,
+        stackTrace: st,
+        context: {'article': article.toJson()},
+      );
       throw Exception('上传失败: $e');
     }
   }
@@ -27,15 +54,41 @@ class ArticleSubmitApiService {
   /// 编辑文章
   static Future<void> editArticle(EditArticle article) async {
     try {
+      LoggerService.instance.logInfo(
+        '[editArticle] 请求 body: ${article.toJson()}',
+        tag: 'ArticleSubmit',
+      );
       final response = await _dio.put(
         '/api/v1/article/editArticleInfo',
         data: article.toJson(),
       );
 
+      LoggerService.instance.logInfo(
+        '[editArticle] 响应 code=${response.data?['code']} msg=${response.data?['msg']}',
+        tag: 'ArticleSubmit',
+      );
+
       if (response.data['code'] != 200) {
         throw Exception(response.data['msg'] ?? '编辑文章失败');
       }
-    } catch (e) {
+    } on DioException catch (e, st) {
+      LoggerService.instance.logApiError(
+        apiName: 'editArticle',
+        url: '/api/v1/article/editArticleInfo',
+        statusCode: e.response?.statusCode,
+        responseBody: e.response?.data?.toString(),
+        error: e,
+        stackTrace: st,
+        requestParams: article.toJson(),
+      );
+      throw Exception('编辑失败: $e');
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: 'editArticle 失败',
+        error: e,
+        stackTrace: st,
+        context: {'article': article.toJson()},
+      );
       throw Exception('编辑失败: $e');
     }
   }
@@ -43,6 +96,7 @@ class ArticleSubmitApiService {
   /// 获取文章状态
   static Future<ArticleStatus> getArticleStatus(int aid) async {
     try {
+      LoggerService.instance.logInfo('[getArticleStatus] aid=$aid', tag: 'ArticleSubmit');
       final response = await _dio.get(
         '/api/v1/article/getArticleStatus',
         queryParameters: {'aid': aid},
@@ -53,7 +107,24 @@ class ArticleSubmitApiService {
       } else {
         throw Exception(response.data['msg'] ?? '获取文章状态失败');
       }
-    } catch (e) {
+    } on DioException catch (e, st) {
+      LoggerService.instance.logApiError(
+        apiName: 'getArticleStatus',
+        url: '/api/v1/article/getArticleStatus',
+        statusCode: e.response?.statusCode,
+        responseBody: e.response?.data?.toString(),
+        error: e,
+        stackTrace: st,
+        requestParams: {'aid': aid},
+      );
+      throw Exception('获取失败: $e');
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: 'getArticleStatus 失败',
+        error: e,
+        stackTrace: st,
+        context: {'aid': aid},
+      );
       throw Exception('获取失败: $e');
     }
   }
@@ -86,7 +157,24 @@ class ArticleSubmitApiService {
       } else {
         throw Exception(response.data['msg'] ?? '获取投稿列表失败');
       }
-    } catch (e) {
+    } on DioException catch (e, st) {
+      LoggerService.instance.logApiError(
+        apiName: 'getManuscriptArticles',
+        url: '/api/v1/article/getUploadArticle',
+        statusCode: e.response?.statusCode,
+        responseBody: e.response?.data?.toString(),
+        error: e,
+        stackTrace: st,
+        requestParams: {'page': page, 'pageSize': pageSize, 'category': category},
+      );
+      throw Exception('获取失败: $e');
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: 'getManuscriptArticles 失败',
+        error: e,
+        stackTrace: st,
+        context: {'page': page, 'category': category},
+      );
       throw Exception('获取失败: $e');
     }
   }
@@ -99,7 +187,24 @@ class ArticleSubmitApiService {
       if (response.data['code'] != 200) {
         throw Exception(response.data['msg'] ?? '删除文章失败');
       }
-    } catch (e) {
+    } on DioException catch (e, st) {
+      LoggerService.instance.logApiError(
+        apiName: 'deleteArticle',
+        url: '/api/v1/article/deleteArticle/$aid',
+        statusCode: e.response?.statusCode,
+        responseBody: e.response?.data?.toString(),
+        error: e,
+        stackTrace: st,
+        requestParams: {'aid': aid},
+      );
+      throw Exception('删除失败: $e');
+    } catch (e, st) {
+      LoggerService.instance.logError(
+        message: 'deleteArticle 失败',
+        error: e,
+        stackTrace: st,
+        context: {'aid': aid},
+      );
       throw Exception('删除失败: $e');
     }
   }
