@@ -1,10 +1,11 @@
 /// 播放器核心控制器
-/// 
+///
 /// 负责：
 /// - Player / VideoController 实例创建与配置
 /// - 数据源加载、播放控制、进度管理
 /// - 事件监听与状态管理
 library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -62,13 +63,14 @@ class VideoPlayerController extends ChangeNotifier {
   // ===========================================================================
   final ValueNotifier<List<String>> availableQualities = ValueNotifier([]);
   final ValueNotifier<String?> currentQuality = ValueNotifier(null);
-  
+
   // 播放状态
   final ValueNotifier<bool> isLoading = ValueNotifier(true);
   final ValueNotifier<bool> isPlayerInitialized = ValueNotifier(false);
   final ValueNotifier<bool> isBuffering = ValueNotifier(false);
   final ValueNotifier<bool> isSwitchingQuality = ValueNotifier(false);
-  final ValueNotifier<bool> hasEverPlayed = ValueNotifier(false); // 区分首次加载与播放中缓冲
+  final ValueNotifier<bool> hasEverPlayed =
+      ValueNotifier(false); // 区分首次加载与播放中缓冲
   final ValueNotifier<String?> errorMessage = ValueNotifier(null);
 
   // 进度相关 (秒级粒度，防跳变)
@@ -84,6 +86,7 @@ class VideoPlayerController extends ChangeNotifier {
   /// 当前分 P 可用字幕轨（先于 [Player.open] 拉列表会在部分机型上不可靠；由 [setDataSource] 成功后同步）
   final ValueNotifier<List<SubtitleTrackItem>> subtitleTracks =
       ValueNotifier<List<SubtitleTrackItem>>([]);
+
   /// `null`：用户关闭或未选轨；`>=0`：对应 [subtitleTracks] 下标
   final ValueNotifier<int?> selectedSubtitleIndex = ValueNotifier<int?>(null);
 
@@ -99,6 +102,7 @@ class VideoPlayerController extends ChangeNotifier {
   bool _isInitializing = false;
   bool _listenersStarted = false;
   bool _settingsLoaded = false;
+
   /// 当前会话是否已应用过保存的清晰度偏好（原生 DASH 轨道覆盖，每会话一次）
   bool _preferredQualityAppliedForSession = false;
   Object? _currentResourceId;
@@ -126,12 +130,13 @@ class VideoPlayerController extends ChangeNotifier {
   bool _isHandlingStall = false;
 
   // 资源与元数据
-  bool _supportsDash = true; 
+  bool _supportsDash = true;
   DashManifest? _manifest;
+
   /// 当前 [_manifest] 所属线路（primary/backup），用于换线后强制重取
-  NetworkLine? _manifestLine; 
+  NetworkLine? _manifestLine;
   String? _currentVid;
-  
+
   // ignore: unused_field
   String? _currentRid; // 保留以备将来使用（如进度上报）
   int _currentPart = 1;
@@ -150,10 +155,13 @@ class VideoPlayerController extends ChangeNotifier {
   static const int _startupReadyTimeoutMs = 1500;
   static const int _playbackPositionGuardMs = 2000;
   static const int _spuriousBackwardJumpMs = 1600;
+
   /// 进度条上缓冲右端至少比当前播放位置多出这么多秒（对齐 YouTube 观感）
   static const int _minBufferedBarAheadSeconds = 3;
+
   /// DASH MPD 定时续签提前量（ms）：key TTL 到期前 30 分钟触发
   static const int _dashRefreshAheadMs = 30 * 60 * 1000;
+
   /// DASH key 有效期（ms）：服务端 Redis 24h
   static const int _dashKeyTtlMs = 24 * 60 * 60 * 1000;
 
@@ -162,8 +170,9 @@ class VideoPlayerController extends ChangeNotifier {
   // ===========================================================================
   PlayerEventListener? eventListener;
   VoidCallback? onReplayAfterCompletion;
-  
-  final StreamController<Duration> _positionStreamController = StreamController.broadcast();
+
+  final StreamController<Duration> _positionStreamController =
+      StreamController.broadcast();
   Stream<Duration> get positionStream => _positionStreamController.stream;
 
   List<StreamSubscription> _subscriptions = [];
@@ -174,7 +183,6 @@ class VideoPlayerController extends ChangeNotifier {
   Timer? _bufferingShowTimer;
   Timer? _dashRefreshTimer;
   bool _dashTokenRefreshed = false;
-
 
   VideoPlayerController() {
     _audioFocus = AudioFocusService(
@@ -253,18 +261,23 @@ class VideoPlayerController extends ChangeNotifier {
       availableQualities.value = manifest.qualities;
       if (manifest.qualities.isEmpty) throw Exception('没有可用的清晰度');
 
-      currentQuality.value = await _getPreferredQuality(availableQualities.value);
+      currentQuality.value =
+          await _getPreferredQuality(availableQualities.value);
 
       if (_isDisposed || _currentResourceId != resourceId) return;
 
       // 获取 DataSource：DASH 直连 或回退 m3u8
       final DataSource dataSource;
       if (_supportsDash) {
-        final ds = manifest.getDataSource(currentQuality.value!);
+        final ds = manifest.getDataSource(
+          currentQuality.value!,
+          preferNativeMpd: manifest.supportsNativeQualitySwitching,
+        );
         if (ds == null) throw Exception('清晰度数据不可用');
         dataSource = ds;
       } else {
-        dataSource = await _streamService.getM3u8DataSource(resourceId, currentQuality.value!);
+        dataSource = await _streamService.getM3u8DataSource(
+            resourceId, currentQuality.value!);
       }
 
       if (_isDisposed || _currentResourceId != resourceId) return;
@@ -277,7 +290,8 @@ class VideoPlayerController extends ChangeNotifier {
         autoPlay: true,
       );
     } catch (e) {
-      _logger.logError(message: '初始化失败', error: e, stackTrace: StackTrace.current);
+      _logger.logError(
+          message: '初始化失败', error: e, stackTrace: StackTrace.current);
       isLoading.value = false;
       errorMessage.value = ErrorHandler.getErrorMessage(e);
     } finally {
@@ -292,12 +306,15 @@ class VideoPlayerController extends ChangeNotifier {
       await _playerCreationFuture;
       return;
     }
+    final ensureSw = Stopwatch()..start();
     _playerCreationFuture = _createPlayerInternal();
     try {
       await _playerCreationFuture;
     } finally {
       _playerCreationFuture = null;
     }
+    ensureSw.stop();
+    _playbackLog('_ensurePlayerReady done (${ensureSw.elapsedMilliseconds}ms)');
   }
 
   /// 实例化底层的 mpv player、AudioSession 和 VideoController
@@ -328,10 +345,12 @@ class VideoPlayerController extends ChangeNotifier {
       //   AV_LOG_VERBOSE "DASH request for url '%s', offset %PRI64d" / "DASH seek pos[..]"
       // media-kit 的 MPVLogLevel 直接映射到 mpv_request_log_messages，
       // 但 mpv 内部还有按模块的 msg-level 过滤，需显式放开 ffmpeg/lavf。
-      opt['msg-level'] = 'ffmpeg=debug,lavf=debug,cplayer=debug,demux=debug,status=no';
+      opt['msg-level'] =
+          'ffmpeg=debug,lavf=debug,cplayer=debug,demux=debug,status=no';
     }
     final bufferSizeBytes = expandBuffer ? 32 * 1024 * 1024 : 16 * 1024 * 1024;
-    
+
+    final createSw = Stopwatch()..start();
     _player = await Player.create(
       configuration: PlayerConfiguration(
         bufferSize: bufferSizeBytes,
@@ -339,12 +358,15 @@ class VideoPlayerController extends ChangeNotifier {
         options: opt,
       ),
     );
-    
+    createSw.stop();
+    _playbackLog(
+        'Player.create() done (${createSw.elapsedMilliseconds}ms, decode=$decodeMode, buf=${bufferSizeBytes ~/ 1024 ~/ 1024}MB)');
+
     _audioFocus.attachPlayer(
       _player!,
       onSeek: (pos) => seek(pos),
     );
-    
+
     await _audioFocus.init();
     await _configurePlayerOnce(decodeMode);
 
@@ -398,8 +420,9 @@ class VideoPlayerController extends ChangeNotifier {
     try {
       if (nativeMpd) {
         // 恢复 mpv 默认：允许 demuxer 正常回读，seek 交给播放器原生精确处理
+        // demuxer-max-back-bytes 是整数类型选项（默认 50 MiB），不能传 'default' 字符串
         _player!.setProperty('hr-seek', 'default');
-        _player!.setProperty('demuxer-max-back-bytes', 'default');
+        _player!.setProperty('demuxer-max-back-bytes', '52428800');
         _player!.setProperty('demuxer-readahead-secs', '10');
       } else {
         // 音视频分离流：精确 seek 以防 A/V 不同步，限制 demuxer 回读规避 PTS 回溯
@@ -504,7 +527,10 @@ class VideoPlayerController extends ChangeNotifier {
       _isSeeking = false;
       isLoading.value = false;
       errorMessage.value = ErrorHandler.getErrorMessage(e);
-      _logger.logError(message: 'setDataSource 失败', error: e, stackTrace: StackTrace.current);
+      _logger.logError(
+          message: 'setDataSource 失败',
+          error: e,
+          stackTrace: StackTrace.current);
     }
   }
 
@@ -528,7 +554,7 @@ class VideoPlayerController extends ChangeNotifier {
 
     _userIntendedPosition = position;
     _lastSeekAt = DateTime.now();
-    
+
     if (isSwitchingQuality.value) {
       _pendingSeekAfterSwitch = position;
       return;
@@ -543,7 +569,7 @@ class VideoPlayerController extends ChangeNotifier {
         final target = _latestSeekRequest!;
         _latestSeekRequest = null;
         _isSeeking = true;
-        
+
         try {
           await _seekInternal(target);
         } catch (e) {
@@ -559,7 +585,9 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> changeQuality(String quality) async {
     if (_isDisposed || _player == null) return;
-    if (currentQuality.value == quality || _currentResourceId == null || isSwitchingQuality.value) {
+    if (currentQuality.value == quality ||
+        _currentResourceId == null ||
+        isSwitchingQuality.value) {
       return;
     }
 
@@ -568,7 +596,8 @@ class VideoPlayerController extends ChangeNotifier {
       if (currentQuality.value == quality || _currentResourceId == null) return;
 
       final playerPos = _player!.state.position;
-      final position = playerPos.inMilliseconds > 0 ? playerPos : _userIntendedPosition;
+      final position =
+          playerPos.inMilliseconds > 0 ? playerPos : _userIntendedPosition;
       _logger.logDebug('changeQuality: $quality, 保存位置 ${position.inSeconds}s');
 
       isSwitchingQuality.value = true;
@@ -632,7 +661,9 @@ class VideoPlayerController extends ChangeNotifier {
     _userIntendedPosition = position;
 
     if (eventListener != null && position.inSeconds > 0) {
-      final diff = (position.inMilliseconds - _lastReportedPosition.inMilliseconds).abs();
+      final diff =
+          (position.inMilliseconds - _lastReportedPosition.inMilliseconds)
+              .abs();
       if (diff >= 500) {
         _lastReportedPosition = position;
         eventListener!.onProgressUpdate(position, _player!.state.duration);
@@ -652,7 +683,8 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   void _updateDurationSecond() {
-    _updateNotifierValue(durationSeconds, _player?.state.duration.inSeconds ?? 0);
+    _updateNotifierValue(
+        durationSeconds, _player?.state.duration.inSeconds ?? 0);
   }
 
   void _updateBufferedSecond() {
@@ -698,8 +730,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   void _armPlaybackPositionGuard(Duration anchor) {
     _playbackPositionGuardAnchor = anchor;
-    _playbackPositionGuardUntil =
-        DateTime.now().add(const Duration(milliseconds: _playbackPositionGuardMs));
+    _playbackPositionGuardUntil = DateTime.now()
+        .add(const Duration(milliseconds: _playbackPositionGuardMs));
   }
 
   // ===========================================================================
@@ -718,23 +750,29 @@ class VideoPlayerController extends ChangeNotifier {
         eventListener?.onPlayingStateChanged(playing);
         WakelockManager.toggle(enable: playing);
       }),
-
       _player!.stream.completed.listen((completed) {
         if (!_isSessionActive(sessionId)) return;
         if (_isDisposed || _isDisposing) return;
-        
-        if (completed && !_hasTriggeredCompletion && !_isSeeking && !isSwitchingQuality.value) {
+
+        if (completed &&
+            !_hasTriggeredCompletion &&
+            !_isSeeking &&
+            !isSwitchingQuality.value) {
           final pos = _player!.state.position;
           final dur = _player!.state.duration;
-          final isRealEnd = isRealCompletion(pos.inMilliseconds, dur.inMilliseconds);
+          final isRealEnd =
+              isRealCompletion(pos.inMilliseconds, dur.inMilliseconds);
           _playbackLog(
             'stream.completed true pos=${pos.inMilliseconds}ms dur=${dur.inMilliseconds}ms '
             'isRealEnd=$isRealEnd switchingQ=${isSwitchingQuality.value}',
           );
 
           if (!isRealEnd && pos.inSeconds > 0) {
-            final progress = dur.inSeconds > 0 ? pos.inMilliseconds / dur.inMilliseconds : 1.0;
-            _logger.logDebug('断网假完成检测: progress=${(progress * 100).toInt()}%, 尝试重试');
+            final progress = dur.inSeconds > 0
+                ? pos.inMilliseconds / dur.inMilliseconds
+                : 1.0;
+            _logger.logDebug(
+                '断网假完成检测: progress=${(progress * 100).toInt()}%, 尝试重试');
             _handleStalled();
             return;
           }
@@ -747,9 +785,11 @@ class VideoPlayerController extends ChangeNotifier {
           _hasTriggeredCompletion = false;
         }
       }),
-
       _player!.stream.position.listen((position) {
-        if (!_isSessionActive(sessionId) || _isDisposed || _isDisposing || _isSeeking) return;
+        if (!_isSessionActive(sessionId) ||
+            _isDisposed ||
+            _isDisposing ||
+            _isSeeking) return;
         final guard = _playbackPositionGuardUntil;
         if (guard != null &&
             DateTime.now().isBefore(guard) &&
@@ -778,10 +818,15 @@ class VideoPlayerController extends ChangeNotifier {
         }
 
         // 循环重播检测
-        if (loopMode.value == LoopMode.on && !isSwitchingQuality.value && !_isSeeking &&
-            position.inSeconds <= 1 && _lastReportedPosition.inSeconds > 5) {
+        if (loopMode.value == LoopMode.on &&
+            !isSwitchingQuality.value &&
+            !_isSeeking &&
+            position.inSeconds <= 1 &&
+            _lastReportedPosition.inSeconds > 5) {
           final dur = _player?.state.duration ?? Duration.zero;
-          if (isRealCompletion(_lastReportedPosition.inMilliseconds, dur.inMilliseconds) && dur.inSeconds > 0) {
+          if (isRealCompletion(
+                  _lastReportedPosition.inMilliseconds, dur.inMilliseconds) &&
+              dur.inSeconds > 0) {
             _playbackLog(
               'loop-file 循环重播检测 -> onVideoEnd lastReported=${_lastReportedPosition.inSeconds}s dur=${dur.inSeconds}s',
             );
@@ -804,7 +849,9 @@ class VideoPlayerController extends ChangeNotifier {
         }
 
         // PTS 调试日志
-        if (position.inSeconds % 10 == 0 && position.inSeconds > 0 && _lastPtsLoggedSecond != position.inSeconds) {
+        if (position.inSeconds % 10 == 0 &&
+            position.inSeconds > 0 &&
+            _lastPtsLoggedSecond != position.inSeconds) {
           _lastPtsLoggedSecond = position.inSeconds;
           _logPtsState();
         }
@@ -814,26 +861,25 @@ class VideoPlayerController extends ChangeNotifier {
           hasEverPlayed.value = true;
         }
       }),
-
       _player!.stream.duration.listen((duration) {
         if (!_isSessionActive(sessionId)) return;
         if (duration > Duration.zero) _updateDurationSecond();
       }),
-
       _player!.stream.buffer.listen((buffer) {
         if (!_isSessionActive(sessionId)) return;
         // 切换清晰度期间冻结缓冲条：旧缓冲继续播放，新轨数据补满后才更新
         if (isSwitchingQuality.value) return;
         _updateBufferedSecond();
       }),
-
       _player!.stream.tracks.listen((tracks) async {
         if (!_isSessionActive(sessionId)) return;
         // 原生 DASH MPD：mpv 自动选轨只比较分辨率/码率，同分辨率同码率存在
         // 30/60fps 多轨时固定取流顺序第一条（30fps），不会读取保存的帧率偏好。
         // 轨道首次就绪时按 currentQuality（已解析用户保存偏好）重新应用轨道。
         if (_preferredQualityAppliedForSession) return;
-        if (!_supportsDash || _manifest?.mpdUrl == null) return;
+        if (!_supportsDash ||
+            _manifest?.mpdUrl == null ||
+            _manifest?.supportsNativeQualitySwitching != true) return;
         final quality = currentQuality.value;
         if (quality == null || quality.isEmpty) return;
 
@@ -848,12 +894,12 @@ class VideoPlayerController extends ChangeNotifier {
           _logger.logDebug('首帧前应用偏好清晰度失败: $e');
         }
       }),
-
       _player!.stream.buffering.listen((buffering) {
         if (!_isSessionActive(sessionId)) return;
         if (buffering) {
           _bufferingShowTimer?.cancel();
-          _bufferingShowTimer = Timer(const Duration(milliseconds: _bufferingSustainMs), () {
+          _bufferingShowTimer =
+              Timer(const Duration(milliseconds: _bufferingSustainMs), () {
             _bufferingShowTimer = null;
             if (_isSessionActive(sessionId) && _player!.state.buffering) {
               isBuffering.value = true;
@@ -872,14 +918,14 @@ class VideoPlayerController extends ChangeNotifier {
           _stalledTimer?.cancel();
         }
       }),
-
       _player!.stream.error.listen((error) {
         if (!_isSessionActive(sessionId)) return;
         if (error.isEmpty) return;
         _logger.logDebug('播放错误: $error');
 
         // OSS 签名过期（HTTP 403 / Access Denied）→ MPD 续签
-        if (error.contains('403') || error.contains('Access Denied') ||
+        if (error.contains('403') ||
+            error.contains('Access Denied') ||
             error.contains('Forbidden')) {
           _playbackLog('[DASH] 检测到 403，触发 MPD 续签');
           _dashTokenRefreshed = false;
@@ -887,36 +933,44 @@ class VideoPlayerController extends ChangeNotifier {
           return;
         }
 
-        if (error.startsWith('tcp: ') || error.startsWith('Failed to open ') ||
+        if (error.startsWith('tcp: ') ||
+            error.startsWith('Failed to open ') ||
             error.startsWith('Can not open external file ')) {
           Future.delayed(const Duration(seconds: 3), () {
             if (!_isSessionActive(sessionId)) return;
-            if (_player!.state.buffering && _player!.state.buffer == Duration.zero) {
+            if (_player!.state.buffering &&
+                _player!.state.buffer == Duration.zero) {
               _logger.logDebug('网络错误确认: buffering 且缓冲为空, 重试');
               _handleStalled();
             }
           });
         }
       }),
-
       _player!.stream.log.listen((log) {
         if (!_isSessionActive(sessionId)) return;
         // C 方案实证：debug 全量落盘（含 lavf/ffmpeg 的 DASH 分片/init/seek 日志）
         if (kDebugMode) {
           _logger.writeMpvTrace('[mpv:${log.prefix}] ${log.text}');
         }
-        if (log.prefix == 'av_sync' || log.prefix == 'audio' || log.prefix == 'cplayer' ||
-            log.text.contains('patients') || log.text.contains('A-V:') ||
-            log.text.contains('sync') || log.text.contains('drop') ||
-            log.text.contains('delay') || log.text.contains('underrun') ||
-            log.text.contains('reset') || log.text.contains('timestamp') ||
+        if (log.prefix == 'av_sync' ||
+            log.prefix == 'audio' ||
+            log.prefix == 'cplayer' ||
+            log.text.contains('patients') ||
+            log.text.contains('A-V:') ||
+            log.text.contains('sync') ||
+            log.text.contains('drop') ||
+            log.text.contains('delay') ||
+            log.text.contains('underrun') ||
+            log.text.contains('reset') ||
+            log.text.contains('timestamp') ||
             log.text.contains('desync')) {
           _logger.logDebug('[mpv:${log.prefix}] ${log.text}');
         }
       }),
     ]);
 
-    _connectivitySubscription ??= Connectivity().onConnectivityChanged.listen((results) {
+    _connectivitySubscription ??=
+        Connectivity().onConnectivityChanged.listen((results) {
       final isConnected = results.any((r) => r != ConnectivityResult.none);
       if (isConnected && errorMessage.value != null) {
         errorMessage.value = null;
@@ -966,7 +1020,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> toggleBackgroundPlay() async {
     backgroundPlayEnabled.value = !backgroundPlayEnabled.value;
-    await PlayerSettingsService.setBackgroundPlayEnabled(backgroundPlayEnabled.value);
+    await PlayerSettingsService.setBackgroundPlayEnabled(
+        backgroundPlayEnabled.value);
   }
 
   Future<void> toggleLoopMode() async {
@@ -982,7 +1037,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   int _nextPlaybackSessionId() => ++_playbackSessionId;
 
-  bool _isSessionActive(int sessionId) => !_isDisposed && _player != null && _playbackSessionId == sessionId;
+  bool _isSessionActive(int sessionId) =>
+      !_isDisposed && _player != null && _playbackSessionId == sessionId;
 
   /// 调试：统一前缀，在 kDebugMode 下经 [LoggerService.logDebug] 输出到控制台
   void _playbackLog(String message) {
@@ -1019,7 +1075,8 @@ class VideoPlayerController extends ChangeNotifier {
     durationSeconds.value = duration.toInt();
   }
 
-  void setVideoMetadata({required String title, String? author, Uri? coverUri}) {
+  void setVideoMetadata(
+      {required String title, String? author, Uri? coverUri}) {
     _videoTitle = title;
     _videoAuthor = author;
     _videoCoverUri = coverUri;
@@ -1040,8 +1097,12 @@ class VideoPlayerController extends ChangeNotifier {
   String getQualityDisplayName(String quality) => getQualityLabel(quality);
 
   Future<void> _enqueueOperation(Future<void> Function() operation) {
-    _operationQueue = _operationQueue.then((_) => operation()).catchError((e, st) {
-      _logger.logError(message: '播放操作队列执行失败', error: e, stackTrace: st is StackTrace ? st : StackTrace.current);
+    _operationQueue =
+        _operationQueue.then((_) => operation()).catchError((e, st) {
+      _logger.logError(
+          message: '播放操作队列执行失败',
+          error: e,
+          stackTrace: st is StackTrace ? st : StackTrace.current);
     });
     return _operationQueue;
   }
@@ -1052,17 +1113,20 @@ class VideoPlayerController extends ChangeNotifier {
     await _seekBufferWaitIfNeeded();
 
     if (_player!.state.duration.inSeconds != 0) {
-      _playbackLog('seekInternal ${position.inMilliseconds}ms (duration ready)');
+      _playbackLog(
+          'seekInternal ${position.inMilliseconds}ms (duration ready)');
       await _player!.seek(position);
       if (!_isDisposed && _player != null) {
         _armPlaybackPositionGuard(position);
       }
       seekSw.stop();
-      _mpvTrace('_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration ready)');
+      _mpvTrace(
+          '_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration ready)');
     } else {
       _mpvTrace('_seekInternal waiting duration ready (polling 200ms)');
       _seekTimer?.cancel();
-      _seekTimer = Timer.periodic(const Duration(milliseconds: 200), (Timer t) async {
+      _seekTimer =
+          Timer.periodic(const Duration(milliseconds: 200), (Timer t) async {
         if (_isDisposed || _player == null) {
           t.cancel();
           _seekTimer = null;
@@ -1083,7 +1147,8 @@ class VideoPlayerController extends ChangeNotifier {
             _logger.logWarning('seek 执行失败: $e');
           }
           seekSw.stop();
-          _mpvTrace('_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration polling)');
+          _mpvTrace(
+              '_seekInternal done (${seekSw.elapsedMilliseconds}ms, duration polling)');
           _isSeeking = false;
         }
       });
@@ -1093,7 +1158,8 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _seekBufferWaitIfNeeded() async {
     if (_player == null || _player!.state.buffer != Duration.zero) return;
     try {
-      await _player!.stream.buffer.first.timeout(const Duration(milliseconds: 300));
+      await _player!.stream.buffer.first
+          .timeout(const Duration(milliseconds: 300));
     } catch (_) {
       // 超时是正常情况，不需要日志
     }
@@ -1101,7 +1167,8 @@ class VideoPlayerController extends ChangeNotifier {
 
   void _notifyVideoEndOnce() {
     final now = DateTime.now();
-    if (_lastVideoEndAt != null && now.difference(_lastVideoEndAt!).inMilliseconds < _videoEndDebounceMs) {
+    if (_lastVideoEndAt != null &&
+        now.difference(_lastVideoEndAt!).inMilliseconds < _videoEndDebounceMs) {
       _playbackLog(
         'onVideoEnd debounced (${now.difference(_lastVideoEndAt!).inMilliseconds}ms since last)',
       );
@@ -1147,7 +1214,9 @@ class VideoPlayerController extends ChangeNotifier {
     tryComplete();
     await completer.future;
     timeout.cancel();
-    for (final sub in subs) { sub.cancel(); }
+    for (final sub in subs) {
+      sub.cancel();
+    }
     waitSw.stop();
     _mpvTrace(
       '_waitForVideoReadyBeforePlay done (${waitSw.elapsedMilliseconds}ms, '
@@ -1161,7 +1230,8 @@ class VideoPlayerController extends ChangeNotifier {
         await _videoController!.waitUntilFirstFrameRendered
             .timeout(const Duration(milliseconds: 1200));
         frameSw.stop();
-        _mpvTrace('waitUntilFirstFrameRendered done (${frameSw.elapsedMilliseconds}ms)');
+        _mpvTrace(
+            'waitUntilFirstFrameRendered done (${frameSw.elapsedMilliseconds}ms)');
       } catch (_) {
         // 首帧渲染超时是正常情况（软解/慢速网络），无须处理
       }
@@ -1170,9 +1240,17 @@ class VideoPlayerController extends ChangeNotifier {
 
   Future<void> _handleStalled() async {
     await _enqueueOperation(() async {
-      if (_isHandlingStall || _isInitializing || isLoading.value || isSwitchingQuality.value || _isSeeking || _seekInFlight) return;
-      if (_lastSeekAt != null && DateTime.now().difference(_lastSeekAt!).inSeconds < 4) return;
-      if (_currentResourceId == null || currentQuality.value == null || _player == null) return;
+      if (_isHandlingStall ||
+          _isInitializing ||
+          isLoading.value ||
+          isSwitchingQuality.value ||
+          _isSeeking ||
+          _seekInFlight) return;
+      if (_lastSeekAt != null &&
+          DateTime.now().difference(_lastSeekAt!).inSeconds < 4) return;
+      if (_currentResourceId == null ||
+          currentQuality.value == null ||
+          _player == null) return;
 
       _isHandlingStall = true;
       try {
@@ -1187,7 +1265,8 @@ class VideoPlayerController extends ChangeNotifier {
           NetworkLineSelector().forceSwitchLine();
         }
 
-        _playbackLog('_handleStalled reload quality=${currentQuality.value} pos=${currentPos.inSeconds}s');
+        _playbackLog(
+            '_handleStalled reload quality=${currentQuality.value} pos=${currentPos.inSeconds}s');
         await _reloadWithDataSource(currentQuality.value!, currentPos);
         _userIntendedPosition = currentPos;
       } catch (e) {
@@ -1205,7 +1284,9 @@ class VideoPlayerController extends ChangeNotifier {
     final dataSource = await _getDataSourceForQuality(targetQuality);
     if (_isDisposed) return;
 
-    await setDataSource(dataSource, seekTo: position.inSeconds > 0 ? position : Duration.zero, autoPlay: true);
+    await setDataSource(dataSource,
+        seekTo: position.inSeconds > 0 ? position : Duration.zero,
+        autoPlay: true);
   }
 
   /// 原生 DASH MPD：通过 mpv 视频轨切换清晰度（不重开播放器）
@@ -1216,7 +1297,10 @@ class VideoPlayerController extends ChangeNotifier {
   /// 匹配失败（track 未就绪 / MPD 未加载）返回 false，由调用方回退重载。
   Future<bool> _switchQualityViaTrack(String quality) async {
     final player = _player;
-    if (player == null || !_supportsDash || _manifest?.mpdUrl == null) {
+    if (player == null ||
+        !_supportsDash ||
+        _manifest?.mpdUrl == null ||
+        _manifest?.supportsNativeQualitySwitching != true) {
       return false;
     }
 
@@ -1246,13 +1330,15 @@ class VideoPlayerController extends ChangeNotifier {
         continue;
       }
       final currentGap = (t.fps! - targetFps).abs();
-      final bestGap = match.fps != null ? (match.fps! - targetFps).abs() : double.infinity;
+      final bestGap =
+          match.fps != null ? (match.fps! - targetFps).abs() : double.infinity;
       if (currentGap < bestGap) match = t;
     }
     if (match == null) return false;
 
     await player.setVideoTrack(match);
-    _playbackLog('[DASH] 切换视频轨到清晰度 $quality (track id=${match.id}, h=${match.h})');
+    _playbackLog(
+        '[DASH] 切换视频轨到清晰度 $quality (track id=${match.id}, h=${match.h})');
     return true;
   }
 
@@ -1303,10 +1389,14 @@ class VideoPlayerController extends ChangeNotifier {
         _streamService.clearManifestCache(_currentResourceId!);
         _manifest = await _streamService.getDashManifest(_currentResourceId!);
         _manifestLine = NetworkLineSelector().selectedLine;
-        if (_isDisposed || _player == null || _currentResourceId == null) return;
+        if (_isDisposed || _player == null || _currentResourceId == null)
+          return;
         final quality = currentQuality.value;
         if (quality == null) return;
-        final ds = _manifest!.getDataSource(quality);
+        final ds = _manifest!.getDataSource(
+          quality,
+          preferNativeMpd: _manifest!.supportsNativeQualitySwitching,
+        );
         if (ds == null) return;
         await setDataSource(ds, seekTo: currentPos, autoPlay: true);
         _dashTokenRefreshed = true;
@@ -1337,7 +1427,10 @@ class VideoPlayerController extends ChangeNotifier {
       if (_isDisposed || _player == null || _currentResourceId == null) return;
       final quality = currentQuality.value;
       if (quality == null) return;
-      final ds = _manifest!.getDataSource(quality);
+      final ds = _manifest!.getDataSource(
+        quality,
+        preferNativeMpd: _manifest!.supportsNativeQualitySwitching,
+      );
       if (ds == null) return;
       await setDataSource(ds, seekTo: currentPos, autoPlay: true);
       _dashTokenRefreshed = true;
@@ -1365,7 +1458,10 @@ class VideoPlayerController extends ChangeNotifier {
         _manifest = await _streamService.getDashManifest(_currentResourceId!);
         _manifestLine = NetworkLineSelector().selectedLine;
       }
-      final ds = _manifest!.getDataSource(quality);
+      final ds = _manifest!.getDataSource(
+        quality,
+        preferNativeMpd: _manifest!.supportsNativeQualitySwitching,
+      );
       if (ds != null) return ds;
     }
     return _streamService.getM3u8DataSource(_currentResourceId!, quality);
@@ -1374,7 +1470,8 @@ class VideoPlayerController extends ChangeNotifier {
   Future<void> _syncLoopProperty() async {
     if (_player == null) return;
     try {
-      _player!.setProperty('loop-file', loopMode.value == LoopMode.on ? 'inf' : 'no');
+      _player!.setProperty(
+          'loop-file', loopMode.value == LoopMode.on ? 'inf' : 'no');
     } catch (e) {
       _logger.logWarning('设置循环模式失败: $e');
     }
@@ -1416,9 +1513,9 @@ class VideoPlayerController extends ChangeNotifier {
     try {
       final cacheStr = await _player!.getProperty('demuxer-cache-state');
       if (cacheStr.isEmpty) return 0;
-      final videoRangeMatch =
-          RegExp(r'video\[\d+\]:\s*([\d.]+)\s*-\s*([\d.]+)', caseSensitive: false)
-              .firstMatch(cacheStr);
+      final videoRangeMatch = RegExp(r'video\[\d+\]:\s*([\d.]+)\s*-\s*([\d.]+)',
+              caseSensitive: false)
+          .firstMatch(cacheStr);
       if (videoRangeMatch != null) {
         final end = double.tryParse(videoRangeMatch.group(2) ?? '') ?? 0.0;
         if (end > 0) return end.ceil();
@@ -1438,7 +1535,8 @@ class VideoPlayerController extends ChangeNotifier {
       final videoPts = double.tryParse(videoPtsStr) ?? 0;
       final audioPts = double.tryParse(audioPtsStr) ?? 0;
       final avsync = double.tryParse(avsyncStr) ?? 0;
-      _logger.logDebug('[PTS] video=${videoPts.toStringAsFixed(3)}s, audio=${audioPts.toStringAsFixed(3)}s, avsync=${avsync.toStringAsFixed(3)}s');
+      _logger.logDebug(
+          '[PTS] video=${videoPts.toStringAsFixed(3)}s, audio=${audioPts.toStringAsFixed(3)}s, avsync=${avsync.toStringAsFixed(3)}s');
     } catch (_) {
       // PTS 日志是诊断用，获取失败静默忽略
     }
@@ -1486,9 +1584,11 @@ class VideoPlayerController extends ChangeNotifier {
         return;
       }
 
-      final preferredIdx = await PlayerSettingsService.pickPreferredSubtitleTrackIndex(list);
+      final preferredIdx =
+          await PlayerSettingsService.pickPreferredSubtitleTrackIndex(list);
       if (preferredIdx < list.length) {
-        await _applySubtitleTrackItem(sessionId, list[preferredIdx], preferredIdx);
+        await _applySubtitleTrackItem(
+            sessionId, list[preferredIdx], preferredIdx);
         return;
       }
       final def = list.indexWhere((t) => t.isDefault);
@@ -1584,7 +1684,8 @@ class VideoPlayerController extends ChangeNotifier {
     }
   }
 
-  Future<void> selectSubtitleIndex(int index, {bool persistPreference = true}) async {
+  Future<void> selectSubtitleIndex(int index,
+      {bool persistPreference = true}) async {
     if (_player == null) return;
     final list = subtitleTracks.value;
     if (index < 0 || index >= list.length) return;
@@ -1601,7 +1702,8 @@ class VideoPlayerController extends ChangeNotifier {
       await disableSubtitles();
       return;
     }
-    final i = await PlayerSettingsService.pickPreferredSubtitleTrackIndex(tracks);
+    final i =
+        await PlayerSettingsService.pickPreferredSubtitleTrackIndex(tracks);
     await selectSubtitleIndex(i, persistPreference: false);
   }
 

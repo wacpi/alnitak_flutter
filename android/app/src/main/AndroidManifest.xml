@@ -19,12 +19,14 @@
 
     <!-- 通知权限（用于后台播放通知） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Android 13+ predictive back（enableOnBackInvokedCallback -> 消除 WindowOnBackDispatcher 警告） -->
     <application
         android:usesCleartextTraffic="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:label="alnitak_flutter"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
