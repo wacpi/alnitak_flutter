@@ -99,6 +99,8 @@ class VideoPlayerController extends ChangeNotifier {
   bool _isInitializing = false;
   bool _listenersStarted = false;
   bool _settingsLoaded = false;
+  /// 当前会话是否已应用过保存的清晰度偏好（原生 DASH 轨道覆盖，每会话一次）
+  bool _preferredQualityAppliedForSession = false;
   Object? _currentResourceId;
   Future<void>? _playerCreationFuture;
   Future<void> _operationQueue = Future.value();
@@ -825,6 +827,28 @@ class VideoPlayerController extends ChangeNotifier {
         _updateBufferedSecond();
       }),
 
+      _player!.stream.tracks.listen((tracks) async {
+        if (!_isSessionActive(sessionId)) return;
+        // 原生 DASH MPD：mpv 自动选轨只比较分辨率/码率，同分辨率同码率存在
+        // 30/60fps 多轨时固定取流顺序第一条（30fps），不会读取保存的帧率偏好。
+        // 轨道首次就绪时按 currentQuality（已解析用户保存偏好）重新应用轨道。
+        if (_preferredQualityAppliedForSession) return;
+        if (!_supportsDash || _manifest?.mpdUrl == null) return;
+        final quality = currentQuality.value;
+        if (quality == null || quality.isEmpty) return;
+
+        // 无论成功与否只尝试一次，避免后续轨道变更事件反复触发
+        _preferredQualityAppliedForSession = true;
+        try {
+          final switched = await _switchQualityViaTrack(quality);
+          if (switched) {
+            _playbackLog('[DASH] 首帧前按偏好清晰度 $quality 应用视频轨');
+          }
+        } catch (e) {
+          _logger.logDebug('首帧前应用偏好清晰度失败: $e');
+        }
+      }),
+
       _player!.stream.buffering.listen((buffering) {
         if (!_isSessionActive(sessionId)) return;
         if (buffering) {
@@ -982,6 +1006,7 @@ class VideoPlayerController extends ChangeNotifier {
     _hasJustCompleted = false;
     _isSeeking = false;
     _pendingSeekAfterSwitch = null;
+    _preferredQualityAppliedForSession = false;
     _playbackPositionGuardUntil = null;
     _playbackPositionGuardAnchor = Duration.zero;
     _lastReportedPosition = Duration.zero;
