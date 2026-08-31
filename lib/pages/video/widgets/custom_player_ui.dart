@@ -507,39 +507,8 @@ class _CustomPlayerUIState extends State<CustomPlayerUI>
                     },
                   ),
 
-                  // 5. 清晰度加载 (透明度0.5)
-                  ValueListenableBuilder<bool>(
-                    valueListenable: widget.logic.isSwitchingQuality,
-                    builder: (context, isSwitching, _) {
-                      if (!isSwitching) return const SizedBox.shrink();
-                      return Center(
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.5),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                                ),
-                              ),
-                              SizedBox(width: 12),
-                              Text('切换清晰度中...', style: TextStyle(color: Colors.white)),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-
-                  // 起播/缓冲不叠 Flutter 转圈，由底层 surface 呈现
+                  // 清晰度切换期间只禁止重复操作；缓冲状态由播放器 surface
+                  // 统一呈现，避免与 Flutter 侧“切换清晰度中”形成双重动画。
 
                   if (_showQualityPanel && _showControls && _panelRight != null)
                     PlayerQualityPanel(

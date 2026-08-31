@@ -36,6 +36,12 @@ import '../main.dart' show audioHandler;
 import 'player_event_listener.dart';
 
 class VideoPlayerController extends ChangeNotifier {
+  // Enable only for a targeted native-player investigation:
+  // flutter run --dart-define=ALNITAK_MPV_TRACE=true
+  // Full trace emits hundreds of native log lines per second and makes a debug
+  // build visibly janky when every line is bridged to Dart and written to disk.
+  static const bool _enableMpvTrace =
+      bool.fromEnvironment('ALNITAK_MPV_TRACE', defaultValue: false);
   // ===========================================================================
   // 1. 服务与基础依赖
   // ===========================================================================
@@ -156,9 +162,6 @@ class VideoPlayerController extends ChangeNotifier {
   static const int _playbackPositionGuardMs = 2000;
   static const int _spuriousBackwardJumpMs = 1600;
 
-  /// 进度条上缓冲右端至少比当前播放位置多出这么多秒（对齐 YouTube 观感）
-  static const int _minBufferedBarAheadSeconds = 3;
-
   /// DASH MPD 定时续签提前量（ms）：key TTL 到期前 30 分钟触发
   static const int _dashRefreshAheadMs = 30 * 60 * 1000;
 
@@ -182,6 +185,8 @@ class VideoPlayerController extends ChangeNotifier {
   Timer? _seekTimer;
   Timer? _bufferingShowTimer;
   Timer? _dashRefreshTimer;
+  bool _cacheRangeLookupInFlight = false;
+  int _cacheRangeLookupGeneration = 0;
   bool _dashTokenRefreshed = false;
 
   VideoPlayerController() {
@@ -338,7 +343,7 @@ class VideoPlayerController extends ChangeNotifier {
       opt['ao'] = audioOutput;
       opt['autosync'] = '30';
     }
-    if (kDebugMode) {
+    if (_enableMpvTrace) {
       // C 方案实证：提升内核/ffmpeg 日志级别，抓 DASH 分片打开、init 下载、seek 过程
       // 关键日志（dashdec.c）：
       //   AV_LOG_DEBUG   "Downloading an initialization section of size %PRI64d"
@@ -354,7 +359,7 @@ class VideoPlayerController extends ChangeNotifier {
     _player = await Player.create(
       configuration: PlayerConfiguration(
         bufferSize: bufferSizeBytes,
-        logLevel: kDebugMode ? MPVLogLevel.trace : MPVLogLevel.error,
+        logLevel: _enableMpvTrace ? MPVLogLevel.trace : MPVLogLevel.warn,
         options: opt,
       ),
     );
@@ -444,6 +449,7 @@ class VideoPlayerController extends ChangeNotifier {
     DataSource dataSource, {
     Duration seekTo = Duration.zero,
     bool autoPlay = true,
+    bool retainAudioFocus = false,
   }) async {
     if (_isDisposed) return;
     final sessionId = _nextPlaybackSessionId();
@@ -452,7 +458,13 @@ class VideoPlayerController extends ChangeNotifier {
       isLoading.value = true;
 
       if (_player != null && _player!.state.playing) {
-        await pause();
+        // 同一视频切档无需释放/重新申请音频焦点，避免 Android 音频会话往返
+        // 造成首帧和声音恢复额外等待。
+        if (retainAudioFocus) {
+          await _player!.pause();
+        } else {
+          await pause();
+        }
       }
 
       removeListeners();
@@ -461,7 +473,8 @@ class VideoPlayerController extends ChangeNotifier {
       // 防止 UI 闪跳位置 0
       _position = _sliderPosition = seekTo;
       _updateSliderPositionSecond();
-      _updateBufferedSecond();
+      // 新数据源不能沿用旧媒体的缓冲长度；在收到新流事件前缓冲终点就是 seek 点。
+      _updateNotifierValue(bufferedSeconds, seekTo.inSeconds);
 
       await _ensurePlayerReady();
       startListeners();
@@ -648,10 +661,23 @@ class VideoPlayerController extends ChangeNotifier {
   }
 
   void onSliderDragEnd(Duration position) {
-    isSliderMoving.value = false;
     _sliderPosition = position;
     _updateSliderPositionSecond();
-    seek(position);
+    // 在 seek 真正提交前保持拖拽态，避免旧 position stream 事件把滑块
+    // 从用户刚放开的目标点又写回旧播放点，造成肉眼可见的回跳。
+    unawaited(_seekAndReleaseSlider(position));
+  }
+
+  Future<void> _seekAndReleaseSlider(Duration position) async {
+    try {
+      await seek(position);
+    } finally {
+      if (!_isDisposed) {
+        isSliderMoving.value = false;
+        _sliderPosition = position;
+        _updateSliderPositionSecond();
+      }
+    }
   }
 
   void _updatePositionState(Duration position) {
@@ -696,10 +722,22 @@ class VideoPlayerController extends ChangeNotifier {
 
     _applyBufferedBarEnd(player, cacheRangeEnd: 0);
 
-    if (_supportsDash) {
+    // demuxer-cache-state 需要一次 platform round-trip；buffer stream 高频更新时
+    // 只允许一个查询在途，避免 Dart/UI 线程积压同类异步任务。
+    if (_supportsDash && !_cacheRangeLookupInFlight) {
+      final sessionId = _playbackSessionId;
+      final lookupGeneration = ++_cacheRangeLookupGeneration;
+      _cacheRangeLookupInFlight = true;
       _tryGetVideoCacheRangeEndSeconds().then((rangeEnd) {
-        if (_isDisposed || _player != player) return;
+        if (_isDisposed || _player != player || !_isSessionActive(sessionId)) {
+          return;
+        }
         _applyBufferedBarEnd(_player!, cacheRangeEnd: rangeEnd);
+      }).whenComplete(() {
+        // 较旧数据源的查询不能解除新数据源查询的在途标记。
+        if (_cacheRangeLookupGeneration == lookupGeneration) {
+          _cacheRangeLookupInFlight = false;
+        }
       });
     }
   }
@@ -707,9 +745,12 @@ class VideoPlayerController extends ChangeNotifier {
   void _applyBufferedBarEnd(Player player, {required int cacheRangeEnd}) {
     final pos = player.state.position.inSeconds;
     final dur = player.state.duration.inSeconds;
-    final demuxerEnd = player.state.buffer.inSeconds;
-    var endAbs = math.max(demuxerEnd, cacheRangeEnd);
-    endAbs = math.max(endAbs, pos + _minBufferedBarAheadSeconds);
+    // media_kit 的 state.buffer 映射 mpv demuxer-cache-time，是“从当前播放点
+    // 往后的缓存时长”而不是时间轴上的绝对终点。demuxer-cache-state 的 range
+    // 则是绝对时间轴，因此两者必须分别换算后取较大值。
+    final endFromBufferedDuration = pos + player.state.buffer.inSeconds;
+    var endAbs = math.max(pos, endFromBufferedDuration);
+    endAbs = math.max(endAbs, cacheRangeEnd);
     if (dur > 0) {
       endAbs = math.min(endAbs, dur);
     }
@@ -948,8 +989,9 @@ class VideoPlayerController extends ChangeNotifier {
       }),
       _player!.stream.log.listen((log) {
         if (!_isSessionActive(sessionId)) return;
-        // C 方案实证：debug 全量落盘（含 lavf/ffmpeg 的 DASH 分片/init/seek 日志）
-        if (kDebugMode) {
+        // Full native trace is intentionally opt-in. Debug builds otherwise
+        // still retain warning/error logs without blocking the UI isolate.
+        if (_enableMpvTrace) {
           _logger.writeMpvTrace('[mpv:${log.prefix}] ${log.text}');
         }
         if (log.prefix == 'av_sync' ||
@@ -991,6 +1033,9 @@ class VideoPlayerController extends ChangeNotifier {
     _seekTimer = null;
     _bufferingShowTimer?.cancel();
     _bufferingShowTimer = null;
+    _cacheRangeLookupInFlight = false;
+    _cacheRangeLookupGeneration++;
+    _cacheRangeLookupInFlight = false;
     _dashRefreshTimer?.cancel();
     _dashRefreshTimer = null;
   }
@@ -1284,9 +1329,12 @@ class VideoPlayerController extends ChangeNotifier {
     final dataSource = await _getDataSourceForQuality(targetQuality);
     if (_isDisposed) return;
 
-    await setDataSource(dataSource,
-        seekTo: position.inSeconds > 0 ? position : Duration.zero,
-        autoPlay: true);
+    await setDataSource(
+      dataSource,
+      seekTo: position.inSeconds > 0 ? position : Duration.zero,
+      autoPlay: true,
+      retainAudioFocus: true,
+    );
   }
 
   /// 原生 DASH MPD：通过 mpv 视频轨切换清晰度（不重开播放器）

@@ -416,6 +416,41 @@ class _CommentManagePageState extends State<CommentManagePage>
   Widget _buildFilterBar() {
     final colors = context.colors;
     final isVideoTab = _tabController.index == 0;
+    final items = <DropdownMenuItem<String>>[];
+    final seenValues = <String>{};
+
+    void addItem(String value, String label) {
+      // DropdownButton 要求当前 value 在 items 中恰好出现一次。后端旧数据
+      // 可能带空 ID 或重复 ID，不能直接 map 成菜单项。
+      if (!seenValues.add(value)) return;
+      items.add(DropdownMenuItem(
+        value: value,
+        child: Text(
+          label,
+          style: TextStyle(color: colors.textPrimary),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ));
+    }
+
+    if (isVideoTab) {
+      addItem('', '全部视频');
+      for (final video in _videoList) {
+        final id = video.vid.trim();
+        if (id.isNotEmpty) addItem(id, video.title);
+      }
+    } else {
+      addItem('0', '全部文章');
+      for (final article in _articleList) {
+        final id = article.aid.toString();
+        if (id != '0') addItem(id, article.title);
+      }
+    }
+    final requestedValue =
+        isVideoTab ? _selectedVideoId : _selectedArticleId.toString();
+    final value = seenValues.contains(requestedValue)
+        ? requestedValue
+        : (isVideoTab ? '' : '0');
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -441,40 +476,12 @@ class _CommentManagePageState extends State<CommentManagePage>
               ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
-                  value: isVideoTab ? _selectedVideoId : _selectedArticleId.toString(),
+                  value: value,
                   isExpanded: true,
                   dropdownColor: colors.card,
                   style: TextStyle(fontSize: 14, color: colors.textPrimary),
                   icon: Icon(Icons.arrow_drop_down, color: colors.iconSecondary),
-                  items: isVideoTab
-                      ? [
-                          DropdownMenuItem(
-                            value: '',
-                            child: Text('全部视频', style: TextStyle(color: colors.textPrimary)),
-                          ),
-                          ..._videoList.map((video) => DropdownMenuItem(
-                                value: video.vid,
-                                child: Text(
-                                  video.title,
-                                  style: TextStyle(color: colors.textPrimary),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              )),
-                        ]
-                      : [
-                          DropdownMenuItem(
-                            value: '0',
-                            child: Text('全部文章', style: TextStyle(color: colors.textPrimary)),
-                          ),
-..._articleList.map((article) => DropdownMenuItem(
-                              value: article.aid.toString(),
-                                child: Text(
-                                  article.title,
-                                  style: TextStyle(color: colors.textPrimary),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              )),
-                        ],
+                  items: items,
                   onChanged: (value) {
                     if (isVideoTab) {
                       setState(() {
