@@ -122,7 +122,9 @@ class UploadApiService {
 
     late final Player player;
     try {
-      player = Player();
+      // 静音打开播放器，仅用于截封面帧：避免选中视频后初始化音频输出而"叮"一声，
+      // 同时保留 seek + screenshot 截图能力
+      player = Player(configuration: const PlayerConfiguration(muted: true));
       await player.open(Media(file.path));
 
       await Future.delayed(const Duration(milliseconds: 500));
@@ -198,10 +200,30 @@ class UploadApiService {
 
       final probe = await probeFuture;
 
+      // 自动截取的封面帧（临时文件）→ 上传成封面 URL，作为默认封面随资源保存
+      // （用户后续可在编辑页手动更换）
+      String? autoCoverUrl;
+      final coverPath = probe['coverPath'] as String?;
+      if (coverPath != null && coverPath.isNotEmpty) {
+        try {
+          final coverFile = File(coverPath);
+          if (await coverFile.exists()) {
+            autoCoverUrl = await uploadImage(coverFile);
+            // 上传完成后清理临时封面文件
+            try {
+              await coverFile.delete();
+            } catch (_) {}
+          }
+        } catch (e) {
+          // 封面抽帧/上传失败不影响视频上传
+          autoCoverUrl = null;
+        }
+      }
+
       if (instantUpload) {
         emit(UploadStage.done, 1.0, '秒传完成');
         final info = await _getVideoInfo(
-            fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+            fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe, cover: autoCoverUrl);
         emit(UploadStage.completing, 1.0, '创建资源...');
         return info;
       }
@@ -236,7 +258,7 @@ class UploadApiService {
       if (onCancel?.call() == true) throw Exception('上传已取消');
       emit(UploadStage.completing, maxProgress, '创建资源...');
       final info = await _getVideoInfo(
-          fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe);
+          fileID: fileID, size: fileSize, title: title, vid: vid, probe: probe, cover: autoCoverUrl);
       emit(UploadStage.done, 1.0, '上传完成');
       return info;
     } catch (e) {
@@ -575,7 +597,7 @@ class UploadApiService {
   }
 
   /// 获取视频信息
-static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, required int size, required String title, String? vid, Map<String, dynamic>? probe}) async {
+static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, required int size, required String title, String? vid, Map<String, dynamic>? probe, String? cover}) async {
     final endpoint = vid != null ? '/api/v1/upload/video/$vid' : '/api/v1/upload/video';
 
 
@@ -585,6 +607,7 @@ static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, requi
         'fileID': fileID,
         'size': size,
         'title': title,
+        if (cover != null && cover.isNotEmpty) 'cover': cover,
         if (probe != null) ...{
           if ((probe['duration'] ?? 0) > 0) 'duration': probe['duration'],
           if ((probe['width'] ?? 0) > 0) 'width': probe['width'],

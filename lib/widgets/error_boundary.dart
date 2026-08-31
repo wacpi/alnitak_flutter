@@ -67,7 +67,13 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
     _flutterOnErrorRef = (FlutterErrorDetails details) {
       // 先调用上一层 handler（含 framework 默认输出），避免吞掉错误信息
       _previousFlutterOnError?.call(details);
-      _handleError(details.exception, details.stack ?? StackTrace.empty);
+      // 记录 details.toString()：其中包含 "The relevant error-causing widget was: ..." 的定位，
+      // 便于精确定位渲染类错误（如 RenderFlex overflow）发生的 widget
+      _handleError(
+        details.exception,
+        details.stack ?? StackTrace.empty,
+        detailsStr: details.toString(),
+      );
     };
     _platformOnErrorRef = (Object error, StackTrace stack) {
       final handled = _previousPlatformOnError?.call(error, stack) ?? false;
@@ -93,14 +99,17 @@ class _ErrorBoundaryState extends State<ErrorBoundary> {
     _handlersRegistered = false;
   }
 
-  void _handleError(Object error, StackTrace stackTrace) {
+  void _handleError(Object error, StackTrace stackTrace, {String? detailsStr}) {
     if (!mounted) return;
 
     LoggerService.instance.logError(
       message: 'ErrorBoundary 捕获到错误',
       error: error,
       stackTrace: stackTrace,
-      context: {'hasError': true},
+      context: {
+        'hasError': true,
+        if (detailsStr != null && detailsStr.isNotEmpty) 'details': detailsStr,
+      },
     );
     widget.onError?.call(error, stackTrace);
 
