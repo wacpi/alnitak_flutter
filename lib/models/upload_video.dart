@@ -31,7 +31,8 @@ class UploadVideo {
 
   Map<String, dynamic> toJson() {
     return {
-      'vid': vid,
+      // 后端 Vid 为 JSON 数字，PC Web 端即发送数字；纯数字字符串转数字，否则保持原样（兼容 shortId）
+      'vid': int.tryParse(vid) ?? vid,
       'title': title,
       'cover': cover,
       'desc': desc,
@@ -61,7 +62,8 @@ class EditVideo {
 
   Map<String, dynamic> toJson() {
     return {
-      'vid': vid,
+      // 后端 Vid 为 JSON 数字，PC Web 端即发送数字；纯数字字符串转数字，否则保持原样（兼容 shortId）
+      'vid': int.tryParse(vid) ?? vid,
       'title': title,
       'cover': cover,
       'desc': desc,
