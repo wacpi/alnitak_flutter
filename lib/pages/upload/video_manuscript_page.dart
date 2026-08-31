@@ -19,12 +19,21 @@ class VideoManuscriptPage extends StatefulWidget {
 }
 
 /// 视频筛选分类
-enum VideoFilter { all, published, transcoding, transcodeFailed, pendingReview, rejected }
+enum VideoFilter {
+  all,
+  published,
+  transcoding,
+  transcodeFailed,
+  pendingReview,
+  rejected
+}
 
 class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
   final ScrollController _scrollController = ScrollController();
   final Set<String> _expandedResourceGroups = <String>{};
   Timer? _silentRefreshTimer;
+  bool _isRefreshingTranscoding = false;
+  int _transcodingRefreshGeneration = 0;
 
   List<ManuscriptVideo> _videos = [];
   int _currentPage = 1;
@@ -115,9 +124,15 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
   }
 
   Future<void> _silentRefreshTranscodingVideos() async {
-    if (!mounted || _isLoading || _currentFilter != VideoFilter.transcoding) {
+    if (!mounted ||
+        _isLoading ||
+        _isRefreshingTranscoding ||
+        _currentFilter != VideoFilter.transcoding) {
       return;
     }
+
+    _isRefreshingTranscoding = true;
+    final generation = _transcodingRefreshGeneration;
 
     final category = _categoryFromFilter(_currentFilter);
     final targetPage = _currentPage < 1 ? 1 : _currentPage;
@@ -139,7 +154,11 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
         }
       }
 
-      if (!mounted) return;
+      if (!mounted ||
+          generation != _transcodingRefreshGeneration ||
+          _currentFilter != VideoFilter.transcoding) {
+        return;
+      }
       if (!_shouldApplySilentRefresh(refreshed)) {
         return;
       }
@@ -147,11 +166,14 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
         _videos = refreshed;
         _hasMore = hasMore;
         if (refreshed.length < (_currentPage - 1) * _pageSize) {
-          _currentPage = (refreshed.length / _pageSize).ceil().clamp(1, targetPage);
+          _currentPage =
+              (refreshed.length / _pageSize).ceil().clamp(1, targetPage);
         }
       });
     } catch (_) {
       // 静默刷新失败不影响当前 UI
+    } finally {
+      _isRefreshingTranscoding = false;
     }
   }
 
@@ -169,7 +191,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
       }
 
       // 仅在进度值有实际变化时触发重绘（避免无效 setState）
-      if ((oldVideo.transcodingProgress - newVideo.transcodingProgress).abs() > 0.01) {
+      if ((oldVideo.transcodingProgress - newVideo.transcodingProgress).abs() >
+          0.01) {
         return true;
       }
 
@@ -299,6 +322,7 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
     setState(() {
       _currentFilter = filter;
     });
+    _transcodingRefreshGeneration++;
     if (filter == VideoFilter.transcoding) {
       _startSilentRefresh();
     } else {
@@ -317,6 +341,7 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
   void _stopSilentRefresh() {
     _silentRefreshTimer?.cancel();
     _silentRefreshTimer = null;
+    _transcodingRefreshGeneration++;
   }
 
   @override
@@ -376,7 +401,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
             child: GestureDetector(
               onTap: () => _onFilterChanged(filter),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 decoration: BoxDecoration(
                   color: isSelected ? colors.accentColor : Colors.transparent,
                   borderRadius: BorderRadius.circular(16),
@@ -386,7 +412,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                   style: TextStyle(
                     fontSize: 13,
                     color: isSelected ? Colors.white : colors.textSecondary,
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                    fontWeight:
+                        isSelected ? FontWeight.w600 : FontWeight.normal,
                   ),
                 ),
               ),
@@ -442,7 +469,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.video_library_outlined, size: 80, color: colors.iconSecondary),
+            Icon(Icons.video_library_outlined,
+                size: 80, color: colors.iconSecondary),
             const SizedBox(height: 16),
             Text(
               '还没有投稿视频',
@@ -529,7 +557,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                         )
                       : Container(
                           color: Colors.grey[300],
-                          child: const Icon(Icons.video_library_outlined, color: Colors.grey),
+                          child: const Icon(Icons.video_library_outlined,
+                              color: Colors.grey),
                         ),
                 ),
               ),
@@ -557,22 +586,27 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                         color: VideoStatusUtils.getStatusColor(video.status),
                       ),
                     ),
-                    if (video.status == 100 || video.status == 200 || video.status == 300)
+                    if (video.status == 100 ||
+                        video.status == 200 ||
+                        video.status == 300)
                       _buildTranscodingProgressSection(video),
                     const SizedBox(height: 4),
                     Row(
                       children: [
-                        Icon(Icons.visibility, size: 14, color: Colors.grey[600]),
+                        Icon(Icons.visibility,
+                            size: 14, color: Colors.grey[600]),
                         const SizedBox(width: 4),
                         Text(
                           '${video.clicks}',
-                          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.grey[600]),
                         ),
                         const SizedBox(width: 16),
                         Expanded(
                           child: Text(
                             TimeUtils.formatTime(video.createdAt),
-                            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey[600]),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -658,10 +692,11 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
           // 总体进度行
           Row(
             children: [
-              Icon(Icons.sync, size: 14, color: colors.warning),
+              Icon(Icons.sync, size: 14, color: colors.progressForeground),
               const SizedBox(width: 4),
               Text('转码进度 $progressText',
-                  style: TextStyle(fontSize: 12, color: colors.warning)),
+                  style: TextStyle(
+                      fontSize: 12, color: colors.progressForeground)),
             ],
           ),
           const SizedBox(height: 4),
@@ -670,7 +705,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
             minHeight: 4,
             borderRadius: BorderRadius.circular(2),
             backgroundColor: colors.progressBackground,
-            valueColor: AlwaysStoppedAnimation<Color>(colors.warning),
+            valueColor:
+                AlwaysStoppedAnimation<Color>(colors.progressForeground),
           ),
           if (details.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -691,8 +727,11 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
     final avgPct = n > 0 ? (totalPct / n).round() : 0;
     final anyFail = items.any((i) => i.status == 'fail');
     final allWaiting = items.every((i) => i.status == 'waiting');
-    final allDone = !allWaiting && !anyFail && items.every((i) => i.status == 'success');
-    final upload = items.map((i) => i.upload).firstWhere((u) => u != null, orElse: () => null);
+    final allDone =
+        !allWaiting && !anyFail && items.every((i) => i.status == 'success');
+    final upload = items
+        .map((i) => i.upload)
+        .firstWhere((u) => u != null, orElse: () => null);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -716,14 +755,17 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                 });
               },
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: colors.surfaceVariant,
                   borderRadius: BorderRadius.only(
                     topLeft: const Radius.circular(5),
                     topRight: const Radius.circular(5),
-                    bottomRight: isExpanded ? Radius.zero : const Radius.circular(5),
-                    bottomLeft: isExpanded ? Radius.zero : const Radius.circular(5),
+                    bottomRight:
+                        isExpanded ? Radius.zero : const Radius.circular(5),
+                    bottomLeft:
+                        isExpanded ? Radius.zero : const Radius.circular(5),
                   ),
                 ),
                 child: Row(
@@ -732,7 +774,8 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                     AnimatedRotation(
                       turns: isExpanded ? 0.25 : 0,
                       duration: const Duration(milliseconds: 200),
-                      child: Icon(Icons.play_arrow, size: 14, color: colors.textSecondary),
+                      child: Icon(Icons.play_arrow,
+                          size: 14, color: colors.textSecondary),
                     ),
                     const SizedBox(width: 6),
                     // 标题
@@ -743,58 +786,79 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                             : '分P$resourceId',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: colors.textPrimary),
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: colors.textPrimary),
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Text('$n 个画质', style: TextStyle(fontSize: 11, color: colors.textSecondary)),
-                    const Spacer(),
+                    Text('$n 个画质',
+                        style: TextStyle(
+                            fontSize: 11, color: colors.textSecondary)),
+                    const SizedBox(width: 8),
                     // 状态标签
                     if (allWaiting)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(
                           color: colors.textSecondary.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(3),
                         ),
-                        child: Text('排队中', style: TextStyle(fontSize: 10, color: colors.textSecondary)),
+                        child: Text('排队中',
+                            style: TextStyle(
+                                fontSize: 10, color: colors.textSecondary)),
                       )
                     else if (anyFail)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(
                           color: colors.error.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(3),
                         ),
-                        child: Text('失败', style: TextStyle(fontSize: 10, color: colors.error)),
+                        child: Text('失败',
+                            style:
+                                TextStyle(fontSize: 10, color: colors.error)),
                       )
                     else if (allDone)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(
                           color: colors.success.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(3),
                         ),
-                        child: Text('完成', style: TextStyle(fontSize: 10, color: colors.success)),
+                        child: Text('完成',
+                            style:
+                                TextStyle(fontSize: 10, color: colors.success)),
                       ),
                     const SizedBox(width: 8),
-                    // 汇总进度条
-                    SizedBox(
-                      width: 140,
-                      child: LinearProgressIndicator(
-                        value: allWaiting ? 0 : avgPct / 100,
-                        minHeight: 14,
-                        borderRadius: BorderRadius.circular(7),
-                        backgroundColor: colors.progressBackground,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          anyFail ? colors.error : (allDone ? colors.success : colors.warning),
+                    // 汇总进度条（弹性宽度，随可用空间收缩，避免窄容器横向溢出）
+                    Flexible(
+                      child: SizedBox(
+                        height: 14,
+                        child: LinearProgressIndicator(
+                          value: allWaiting ? 0 : avgPct / 100,
+                          minHeight: 14,
+                          borderRadius: BorderRadius.circular(7),
+                          backgroundColor: colors.progressBackground,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            anyFail
+                                ? colors.error
+                                : (allDone
+                                    ? colors.success
+                                    : colors.progressForeground),
+                          ),
                         ),
                       ),
                     ),
                     const SizedBox(width: 4),
                     Text(
                       allWaiting ? '0%' : '$avgPct%',
-                      style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                      style:
+                          TextStyle(fontSize: 10, color: colors.textSecondary),
                     ),
                   ],
                 ),
@@ -811,37 +875,46 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     ...items.map((item) => Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(item.quality, style: TextStyle(fontSize: 11, color: colors.textSecondary)),
-                          const SizedBox(height: 2),
-                          Row(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Expanded(
-                                child: LinearProgressIndicator(
-                                  value: (item.progress.clamp(0, 100)) / 100,
-                                  minHeight: 10,
-                                  borderRadius: BorderRadius.circular(5),
-                                  backgroundColor: colors.progressBackground,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    item.status == 'fail' ? colors.error :
-                                    item.status == 'success' ? colors.success :
-                                    colors.warning,
+                              Text(item.quality,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: colors.textSecondary)),
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: LinearProgressIndicator(
+                                      value:
+                                          (item.progress.clamp(0, 100)) / 100,
+                                      minHeight: 10,
+                                      borderRadius: BorderRadius.circular(5),
+                                      backgroundColor:
+                                          colors.progressBackground,
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                        item.status == 'fail'
+                                            ? colors.error
+                                            : item.status == 'success'
+                                                ? colors.success
+                                                : colors.progressForeground,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Text(
-                                '${item.progress.toStringAsFixed(0)}%',
-                                style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    '${item.progress.toStringAsFixed(0)}%',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: colors.textSecondary),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
-                        ],
-                      ),
-                    )),
+                        )),
                     // 上传进度
                     if (upload != null && upload.status != 'local')
                       Padding(
@@ -851,27 +924,34 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                           children: [
                             Container(height: 1, color: colors.divider),
                             const SizedBox(height: 6),
-                            Text('OSS 上传', style: TextStyle(fontSize: 11, color: colors.textSecondary)),
+                            Text('OSS 上传',
+                                style: TextStyle(
+                                    fontSize: 11, color: colors.textSecondary)),
                             const SizedBox(height: 2),
                             Row(
                               children: [
                                 Expanded(
                                   child: LinearProgressIndicator(
-                                    value: (upload.progress.clamp(0, 100)) / 100,
+                                    value:
+                                        (upload.progress.clamp(0, 100)) / 100,
                                     minHeight: 10,
                                     borderRadius: BorderRadius.circular(5),
                                     backgroundColor: colors.progressBackground,
                                     valueColor: AlwaysStoppedAnimation<Color>(
-                                      upload.status == 'fail' ? colors.error :
-                                      upload.status == 'success' ? colors.success :
-                                      colors.warning,
+                                      upload.status == 'fail'
+                                          ? colors.error
+                                          : upload.status == 'success'
+                                              ? colors.success
+                                              : colors.progressForeground,
                                     ),
                                   ),
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
                                   '${upload.progress.toStringAsFixed(0)}%',
-                                  style: TextStyle(fontSize: 10, color: colors.textSecondary),
+                                  style: TextStyle(
+                                      fontSize: 10,
+                                      color: colors.textSecondary),
                                 ),
                               ],
                             ),
@@ -887,5 +967,4 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
       ),
     );
   }
-
 }
