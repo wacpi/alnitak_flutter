@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
@@ -71,20 +72,52 @@ class LoggerService {
 
   /// 记录 mpv / 播放链路诊断日志到 mpv_trace.log（debug 包真机实证用时抓取）
   ///
-  /// [line] 已带语义前缀（如 `[APP]` 或 `[mpv:prefix]`），此处只补时间戳并追加写入。
+  /// [line] 已带语义前缀（如 `[APP]` 或 `[mpv:prefix]`），此处只补时间戳。
   /// 不 gate kDebugMode：决定权在调用方。
   ///
-  /// 重要：所有写入经 [_mpvTraceQueue] 串行化。trace 级别下 mpv 日志高频触发，
-  /// 若直接并发 writeAsString(append) 会在字节级交错损坏行（曾实测：`done
-  /// (3333ms, duration` 后直接接下一行时间戳）。队列保证一次只有一个写入在途。
-  Future<void> _mpvTraceQueue = Future.value();
+  /// 重要：写入经 [writeMpvTrace] 先入内存缓冲，由 [_flushMpvTraceBuffer] 定时/proportion
+  /// 批量 flush。trace 级别下 mpv 日志每秒数百条，若每条直接 writeAsString(append) 会在
+  /// Android 上产生数百次 open/write/close 系统调用，造成播放/UI 卡顿（曾实测 2.5MB/分钟
+  /// 落盘）；且并发写会字节级交错损坏行。缓冲 + 批量 append 同时解决 I/O 频率与行交错问题。
+  static const int _mpvTraceFlushThreshold = 32 * 1024; // 缓冲超 32KB 立即落盘
+  static const Duration _mpvTraceFlushInterval = Duration(milliseconds: 400);
+  final StringBuffer _mpvTraceBuffer = StringBuffer();
+  Timer? _mpvTraceFlushTimer;
+  bool _mpvTraceFlushing = false;
 
   Future<void> writeMpvTrace(String line) {
     // 折叠 mpv 文本内嵌换行，保证一行逻辑 = 一行物理（避免碎片行）。
     final content = '${DateFormat('HH:mm:ss.SSS').format(DateTime.now())} '
         '${line.replaceAll(RegExp(r'[\r\n]+'), ' ')}\n';
-    _mpvTraceQueue = _mpvTraceQueue.then((_) => _appendMpvTrace(content));
-    return _mpvTraceQueue;
+    _mpvTraceBuffer.write(content);
+
+    if (_mpvTraceBuffer.length >= _mpvTraceFlushThreshold) {
+      return flushMpvTrace();
+    }
+    _mpvTraceFlushTimer ??= Timer(_mpvTraceFlushInterval, flushMpvTrace);
+    return Future.value();
+  }
+
+  /// 立即将缓冲批量写入文件（供定时器/超阈值/链路关键点调用，幂等）
+  Future<void> flushMpvTrace() {
+    _mpvTraceFlushTimer?.cancel();
+    _mpvTraceFlushTimer = null;
+    if (_mpvTraceFlushing) return Future.value();
+    if (_mpvTraceBuffer.isEmpty) return Future.value();
+
+    _mpvTraceFlushing = true;
+    final content = _mpvTraceBuffer.toString();
+    _mpvTraceBuffer.clear();
+    return _appendMpvTrace(content).whenComplete(() {
+      _mpvTraceFlushing = false;
+      // 写入期间又积累了新内容 → 继续排队 flush，避免静默丢弃
+      if (_mpvTraceBuffer.isNotEmpty && _mpvTraceFlushTimer == null) {
+        _mpvTraceFlushTimer = Timer(
+          const Duration(milliseconds: 200),
+          flushMpvTrace,
+        );
+      }
+    });
   }
 
   Future<void> _appendMpvTrace(String content) async {
