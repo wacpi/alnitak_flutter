@@ -399,7 +399,7 @@ class VideoPlayerController extends ChangeNotifier {
       if (nativeMpd) {
         // 恢复 mpv 默认：允许 demuxer 正常回读，seek 交给播放器原生精确处理
         _player!.setProperty('hr-seek', 'default');
-        _player!.setProperty('demuxer-max-back-bytes', '-1');
+        _player!.setProperty('demuxer-max-back-bytes', 'default');
         _player!.setProperty('demuxer-readahead-secs', '10');
       } else {
         // 音视频分离流：精确 seek 以防 A/V 不同步，限制 demuxer 回读规避 PTS 回溯
