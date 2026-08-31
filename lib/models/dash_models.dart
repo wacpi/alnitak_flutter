@@ -95,10 +95,19 @@ class DashManifest {
   /// 不再手工拆流。为 null 表示该 manifest 来自 JSON/m3u8 回退路径。
   final String? mpdUrl;
 
-  /// True only when all video renditions belong to one AdaptationSet. In that
-  /// shape a native DASH player can switch/lock Representation tracks safely.
-  /// Non-aligned SegmentList manifests use one AdaptationSet per rendition and
-  /// must reload a fixed rendition instead.
+  /// 后端声明的清晰度切换方式，来自 `/getResourceQuality` 的 `dashSwitchMode`：
+  /// - `"reload"`: 转码产物未对齐，切换需重载固定档清单并保持进度（安全路径）。
+  /// - `"representation"`: 转码产物已对齐，可用原生 Representation 无缝切换。
+  final String dashSwitchMode;
+
+  /// 是否可用原生 DASH 视频轨切换（mpv `setVideoTrack`）。
+  ///
+  /// 必须同时满足两个条件：
+  /// 1. 所有视频档位属于单个 AdaptationSet（单 AS 多 Rep 结构）；
+  /// 2. 后端 `dashSwitchMode == "representation"`（转码产物已对齐）。
+  ///
+  /// 否则必须走 reload（重载固定档并恢复位置），避免在未对齐产物上
+  /// 原生切轨导致重新 seek 拉取而卡黑屏。
   final bool supportsNativeQualitySwitching;
 
   const DashManifest({
@@ -107,6 +116,7 @@ class DashManifest {
     required this.supportsDash,
     required this.fetchedAt,
     this.mpdUrl,
+    this.dashSwitchMode = 'reload',
     this.supportsNativeQualitySwitching = false,
   });
 

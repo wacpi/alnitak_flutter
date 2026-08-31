@@ -68,6 +68,9 @@ class VideoStreamService {
 
   /// 实际的 manifest 请求逻辑（MPD → JSON → m3u8 三级回退）
   Future<DashManifest> _fetchDashManifest(Object resourceId) async {
+    // 与 MPD 请求并发生成的能力元数据请求：决定清晰度切换方式。
+    // 失败时回退到安全默认 "reload"（未对齐产物 + reload 切换）。
+    final switchModeFuture = _fetchDashSwitchMode(resourceId);
     // 1) MPD 优先（单次请求返回所有清晰度）
     try {
       final response = await _dio.get(
@@ -86,7 +89,8 @@ class VideoStreamService {
         final mpdUrl = '${ApiConfig.baseUrl}/api/v1/video/getVideoFile'
             '?resourceId=$resourceId&format=dash-unified'
             '${_useBackupOss ? '&backup=true' : ''}';
-        return _parseMpd(xml, mpdUrl: mpdUrl);
+        final dashSwitchMode = await switchModeFuture;
+        return _parseMpd(xml, mpdUrl: mpdUrl, dashSwitchMode: dashSwitchMode);
       }
     } catch (e) {
       if (kDebugMode) debugPrint('dash-unified failed, fallback JSON: $e');
@@ -135,6 +139,27 @@ class VideoStreamService {
 
     // 3) m3u8 回退（旧资源）
     return _fallbackManifest(resourceId);
+  }
+
+  /// 并发获取后端声明的清晰度切换方式（`dashSwitchMode`）。
+  ///
+  /// 决策清晰度切换用原生 Representation 切换还是固定档 reload。
+  /// 请求失败或字段缺失时回退到安全默认 `"reload"`。
+  Future<String> _fetchDashSwitchMode(Object resourceId) async {
+    try {
+      final response = await _dio.get(
+        '/api/v1/video/getResourceQuality',
+        queryParameters: {'resourceId': resourceId},
+      );
+      final data = response.data;
+      if (data is Map && data['code'] == 200 && data['data'] is Map) {
+        final mode = (data['data'] as Map)['dashSwitchMode']?.toString();
+        if (mode == 'representation') return 'representation';
+      }
+    } catch (e) {
+      if (kDebugMode) debugPrint('getResourceQuality dashSwitchMode failed: $e');
+    }
+    return 'reload';
   }
 
   // ──────────────────────────────────────────────
@@ -287,7 +312,8 @@ class VideoStreamService {
     );
   }
 
-  DashManifest _parseMpd(String xmlContent, {String? mpdUrl}) {
+  DashManifest _parseMpd(String xmlContent,
+      {String? mpdUrl, String dashSwitchMode = 'reload'}) {
     final document = XmlDocument.parse(xmlContent);
     final mpd = document.rootElement;
 
@@ -361,7 +387,12 @@ class VideoStreamService {
       supportsDash: true,
       fetchedAt: DateTime.now(),
       mpdUrl: mpdUrl,
-      supportsNativeQualitySwitching: videoAdaptationSetCount == 1,
+      // 原生 Representation 切换需同时满足：单视频 AS 结构 + 后端声明
+      // 已对齐（dashSwitchMode == "representation"）。未对齐时走 reload，
+      // 避免原生切轨在未对齐产物上重新 seek 拉取而卡黑屏。
+      dashSwitchMode: dashSwitchMode,
+      supportsNativeQualitySwitching:
+          videoAdaptationSetCount == 1 && dashSwitchMode == 'representation',
     );
   }
 
