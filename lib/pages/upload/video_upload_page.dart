@@ -18,8 +18,9 @@ import 'widgets/video_resource_list.dart';
 
 class VideoUploadPage extends StatefulWidget {
   final String? vid; // 如果是编辑模式，传入vid
+  final String? initialCover; // 自动抽帧上传的封面URL，作为本稿默认封面（可改）
 
-  const VideoUploadPage({super.key, this.vid});
+  const VideoUploadPage({super.key, this.vid, this.initialCover});
 
   @override
   State<VideoUploadPage> createState() => _VideoUploadPageState();
@@ -191,6 +192,12 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
         _tags = videoStatus.tags.where((t) => t.isNotEmpty).toList();
         _copyright = videoStatus.copyright;
         _coverUrl = videoStatus.cover;
+        // 若本稿还未提交封面（vid级cover为空），用自动抽帧上传的默认封面回显到封面选择区域
+        if ((_coverUrl == null || _coverUrl!.isEmpty) &&
+            widget.initialCover != null &&
+            widget.initialCover!.isNotEmpty) {
+          _coverUrl = widget.initialCover;
+        }
         _resources = videoStatus.resources; // 加载资源列表
 
         // 设置分区
@@ -355,6 +362,8 @@ Future<void> _uploadVideo({String? title}) async {
       if (!mounted) return;
 
       final vid = videoInfo['vid']?.toString();
+      // 自动抽帧上传的封面URL（若成功），传给编辑页作为本稿默认封面回显
+      final coverUrl = videoInfo['coverUrl'] as String?;
 
       // 【新增】上传成功后清理当前视频临时文件
       if (_videoFile != null) {
@@ -383,7 +392,7 @@ Future<void> _uploadVideo({String? title}) async {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (context) => VideoUploadPage(vid: vid),
+            builder: (context) => VideoUploadPage(vid: vid, initialCover: coverUrl),
           ),
         );
       }

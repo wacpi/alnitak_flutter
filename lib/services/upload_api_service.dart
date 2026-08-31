@@ -620,7 +620,12 @@ static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, requi
 
     final data = response.data as Map<String, dynamic>;
     if (data['code'] == 200) {
-      return data['data']['resource'] as Map<String, dynamic>;
+      final resource = data['data']['resource'] as Map<String, dynamic>;
+      // 把自动抽帧的封面 URL 一并返回，供上层回显到封面选择区域（作为本稿默认封面）
+      if (cover != null && cover.isNotEmpty) {
+        resource['coverUrl'] = cover;
+      }
+      return resource;
     } else {
       throw Exception(data['msg'] ?? '获取视频信息失败');
     }
