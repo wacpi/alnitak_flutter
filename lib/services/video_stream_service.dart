@@ -37,11 +37,11 @@ class VideoStreamService {
 
   /// 播放器 HTTP 请求头
   static Map<String, String> get defaultHttpHeaders => {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Safari/537.36',
-    'referer': ApiConfig.baseUrl,
-  };
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36',
+        'referer': ApiConfig.baseUrl,
+      };
 
   // ──────────────────────────────────────────────
   //  DASH（新资源主路径）
@@ -110,7 +110,8 @@ class VideoStreamService {
             }
             running--;
           }
-          pending.add(MapEntry(quality, _getJsonStreamSafe(resourceId, quality)));
+          pending
+              .add(MapEntry(quality, _getJsonStreamSafe(resourceId, quality)));
           running++;
         }
         for (final entry in pending) {
@@ -141,7 +142,8 @@ class VideoStreamService {
   // ──────────────────────────────────────────────
 
   /// 构造 m3u8 URL 给 mpv 直接加载
-  Future<DataSource> getM3u8DataSource(Object resourceId, String quality) async {
+  Future<DataSource> getM3u8DataSource(
+      Object resourceId, String quality) async {
     await _ensureLineChecked();
     final backup = _useBackupOss ? '&backup=true' : '';
     final url = '${ApiConfig.baseUrl}/api/v1/video/getVideoFile'
@@ -153,7 +155,8 @@ class VideoStreamService {
   //  内部：MPD 解析 & 回退
   // ──────────────────────────────────────────────
 
-Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async {
+  Future<DashStreamInfo?> _getJsonStream(
+      Object resourceId, String quality) async {
     final response = await _dio.get(
       '/api/v1/video/getVideoFile',
       queryParameters: {
@@ -167,7 +170,8 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
   }
 
   /// 安全并发请求：独立 try/catch，单个失败不影响整体
-  Future<DashStreamInfo?> _getJsonStreamSafe(Object resourceId, String quality) async {
+  Future<DashStreamInfo?> _getJsonStreamSafe(
+      Object resourceId, String quality) async {
     try {
       return await _getJsonStream(resourceId, quality);
     } catch (e) {
@@ -196,12 +200,14 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
     final duration = _pickNum(data, const ['duration', 'timeLength']) ?? 0.0;
 
     final dash = _asMap(data['dash']) ?? data;
-    final videoMap = _asMap(dash['video']) ?? _asMap(_asList(dash['video']).firstOrNull);
+    final videoMap =
+        _asMap(dash['video']) ?? _asMap(_asList(dash['video']).firstOrNull);
     if (videoMap == null) return null;
     final video = _toVideoItem(videoMap, quality);
     if (video == null) return null;
 
-    final audioMap = _asMap(dash['audio']) ?? _asMap(_asList(dash['audio']).firstOrNull);
+    final audioMap =
+        _asMap(dash['audio']) ?? _asMap(_asList(dash['audio']).firstOrNull);
     final audio = _toAudioItem(audioMap);
 
     return DashStreamInfo(
@@ -245,31 +251,38 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
     return null;
   }
 
-  DashVideoItem? _toVideoItem(Map<String, dynamic> map, String fallbackQuality) {
-    final baseUrl = _pickString(map, const ['baseUrl', 'base_url', 'url', 'videoUrl', 'video_url']);
+  DashVideoItem? _toVideoItem(
+      Map<String, dynamic> map, String fallbackQuality) {
+    final baseUrl = _pickString(
+        map, const ['baseUrl', 'base_url', 'url', 'videoUrl', 'video_url']);
     if (baseUrl == null || baseUrl.isEmpty) return null;
-    final id = _pickString(map, const ['id', 'quality', 'name']) ?? fallbackQuality;
+    final id =
+        _pickString(map, const ['id', 'quality', 'name']) ?? fallbackQuality;
     return DashVideoItem(
       id: id,
       baseUrl: baseUrl,
       bandwidth: (_pickNum(map, const ['bandwidth', 'bandWidth']) ?? 0).toInt(),
-      mimeType: _pickString(map, const ['mimeType', 'mime_type']) ?? 'video/mp4',
+      mimeType:
+          _pickString(map, const ['mimeType', 'mime_type']) ?? 'video/mp4',
       codecs: _pickString(map, const ['codecs', 'codec']) ?? '',
       width: (_pickNum(map, const ['width']) ?? 0).toInt(),
       height: (_pickNum(map, const ['height']) ?? 0).toInt(),
-      frameRate: _pickString(map, const ['frameRate', 'frame_rate', 'fps']) ?? '30.000',
+      frameRate: _pickString(map, const ['frameRate', 'frame_rate', 'fps']) ??
+          '30.000',
     );
   }
 
   DashAudioItem? _toAudioItem(Map<String, dynamic>? map) {
     if (map == null) return null;
-    final baseUrl = _pickString(map, const ['baseUrl', 'base_url', 'url', 'audioUrl', 'audio_url']);
+    final baseUrl = _pickString(
+        map, const ['baseUrl', 'base_url', 'url', 'audioUrl', 'audio_url']);
     if (baseUrl == null || baseUrl.isEmpty) return null;
     return DashAudioItem(
       id: _pickString(map, const ['id', 'name']) ?? 'audio',
       baseUrl: baseUrl,
       bandwidth: (_pickNum(map, const ['bandwidth', 'bandWidth']) ?? 0).toInt(),
-      mimeType: _pickString(map, const ['mimeType', 'mime_type']) ?? 'audio/mp4',
+      mimeType:
+          _pickString(map, const ['mimeType', 'mime_type']) ?? 'audio/mp4',
       codecs: _pickString(map, const ['codecs', 'codec']) ?? 'mp4a.40.2',
     );
   }
@@ -283,6 +296,9 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
 
     final period = mpd.findAllElements('Period').first;
     final adaptationSets = period.findAllElements('AdaptationSet').toList();
+    final videoAdaptationSetCount = adaptationSets
+        .where((as_) => as_.getAttribute('mimeType') == 'video/mp4')
+        .length;
 
     // 音频（共享，取第一个 audio/mp4）
     String? audioUrl;
@@ -311,8 +327,7 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
         final video = DashVideoItem(
           id: id,
           baseUrl: videoBaseUrl,
-          bandwidth:
-              int.tryParse(rep.getAttribute('bandwidth') ?? '') ?? 0,
+          bandwidth: int.tryParse(rep.getAttribute('bandwidth') ?? '') ?? 0,
           mimeType: 'video/mp4',
           codecs: rep.getAttribute('codecs') ?? '',
           width: int.tryParse(rep.getAttribute('width') ?? '') ?? 0,
@@ -346,6 +361,7 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
       supportsDash: true,
       fetchedAt: DateTime.now(),
       mpdUrl: mpdUrl,
+      supportsNativeQualitySwitching: videoAdaptationSetCount == 1,
     );
   }
 
@@ -368,7 +384,8 @@ Future<DashStreamInfo?> _getJsonStream(Object resourceId, String quality) async 
     }
     final qualityObj = response.data['data']['quality'];
     if (qualityObj is List) {
-      return sortQualities(List<String>.from(qualityObj.map((e) => e.toString())));
+      return sortQualities(
+          List<String>.from(qualityObj.map((e) => e.toString())));
     }
     return const [];
   }

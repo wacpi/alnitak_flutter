@@ -95,20 +95,27 @@ class DashManifest {
   /// 不再手工拆流。为 null 表示该 manifest 来自 JSON/m3u8 回退路径。
   final String? mpdUrl;
 
+  /// True only when all video renditions belong to one AdaptationSet. In that
+  /// shape a native DASH player can switch/lock Representation tracks safely.
+  /// Non-aligned SegmentList manifests use one AdaptationSet per rendition and
+  /// must reload a fixed rendition instead.
+  final bool supportsNativeQualitySwitching;
+
   const DashManifest({
     required this.streams,
     required this.qualities,
     required this.supportsDash,
     required this.fetchedAt,
     this.mpdUrl,
+    this.supportsNativeQualitySwitching = false,
   });
 
   /// 从缓存获取指定清晰度的 DataSource
   ///
-  /// 原生 MPD 模式下所有清晰度都指向同一个 MPD URL
-  /// （播放器通过 setVideoTrack 切换，无需重新加载）。
-  DataSource? getDataSource(String quality) {
-    if (mpdUrl != null) {
+  /// 对齐的原生 MPD 可让播放器在同一清单内切换；非对齐 MPD 则从
+  /// 已解析的固定 rendition 直链创建数据源，以保持切换结果确定。
+  DataSource? getDataSource(String quality, {bool preferNativeMpd = true}) {
+    if (mpdUrl != null && preferNativeMpd) {
       return DataSource(
         videoSource: mpdUrl!,
         httpHeaders: _defaultHttpHeaders,
@@ -120,9 +127,8 @@ class DashManifest {
     if (stream == null) return null;
 
     final videoUrl = _resolveUrl(stream.video.baseUrl);
-    final audioUrl = stream.audio != null
-        ? _resolveUrl(stream.audio!.baseUrl)
-        : null;
+    final audioUrl =
+        stream.audio != null ? _resolveUrl(stream.audio!.baseUrl) : null;
 
     return DataSource(
       videoSource: videoUrl,
@@ -133,13 +139,13 @@ class DashManifest {
 
   /// 播放器默认 HTTP 请求头（参考 pili_plus）
   static Map<String, String> get _defaultHttpHeaders => {
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'referer': ApiConfig.baseUrl,
-  };
+        'user-agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'referer': ApiConfig.baseUrl,
+      };
 
   /// 缓存是否已过期（默认 25 分钟，服务端 key TTL 通常 30 分钟）
-  bool get isExpired =>
-      DateTime.now().difference(fetchedAt).inMinutes >= 25;
+  bool get isExpired => DateTime.now().difference(fetchedAt).inMinutes >= 25;
 
   /// 解析 URL：相对路径拼接 baseUrl，绝对路径直接使用
   static String _resolveUrl(String url) {
