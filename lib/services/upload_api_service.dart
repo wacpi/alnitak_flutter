@@ -267,7 +267,7 @@ class UploadApiService {
         fileName: fileName,
         fileSize: fileSize,
         uploadedChunks: uploadedChunks,
-        onProgress: (p) => emit(UploadStage.directUpload, p, '直传OSS'),
+        onProgress: (p) => emit(UploadStage.directUpload, p, '正在上传'),
         onCancel: onCancel,
         fileID: fileID,
       );
@@ -279,7 +279,7 @@ class UploadApiService {
           fileMd5: fileMd5,
           fileName: fileName,
           uploadedChunks: uploadedChunks,
-          onProgress: (p) => emit(UploadStage.chunkUpload, p, 'VPS分片上传'),
+          onProgress: (p) => emit(UploadStage.chunkUpload, p, '服务端上传'),
           onCancel: onCancel,
         );
         if (onCancel?.call() == true) throw Exception('上传已取消');

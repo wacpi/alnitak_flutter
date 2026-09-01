@@ -924,7 +924,7 @@ class _VideoManuscriptPageState extends State<VideoManuscriptPage> {
                           children: [
                             Container(height: 1, color: colors.divider),
                             const SizedBox(height: 6),
-                            Text('OSS 上传',
+                            Text('正在上传',
                                 style: TextStyle(
                                     fontSize: 11, color: colors.textSecondary)),
                             const SizedBox(height: 2),

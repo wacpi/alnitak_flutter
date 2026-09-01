@@ -325,7 +325,7 @@ class _ArticleUploadPageState extends State<ArticleUploadPage> {
                         hintText: '请输入文章标题',
                         border: OutlineInputBorder(),
                       ),
-                      maxLength: 80,
+                      maxLength: 100,
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
                           return '请输入标题';
