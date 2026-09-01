@@ -633,13 +633,20 @@ static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, requi
     final endpoint = vid != null ? '/api/v1/upload/video/$vid' : '/api/v1/upload/video';
 
 
+    // 建资源接口走后端 initVideo -> generateFileUrl, generateFileUrl 期望纯 objectKey 并自动加 /api/ 前缀;
+    // 而封面上传接口返回的是完整 URL(/api/image/xxx.jpg), 直接传会导致存储成 /api//api/image/... 双斜杠, 图片 404。
+    // 故这里把完整 URL 转回纯 objectKey(去掉 /api/ 前缀), 由后端拼出正确 /api/image/xxx.jpg。
+    final coverObjectKey = cover != null && cover.startsWith('/api/')
+        ? cover.substring('/api/'.length)
+        : cover;
+
     final response = await _dio.post(
       endpoint,
       data: {
         'fileID': fileID,
         'size': size,
         'title': title,
-        if (cover != null && cover.isNotEmpty) 'cover': cover,
+        if (coverObjectKey != null && coverObjectKey.isNotEmpty) 'cover': coverObjectKey,
         if (probe != null) ...{
           if ((probe['duration'] ?? 0) > 0) 'duration': probe['duration'],
           if ((probe['width'] ?? 0) > 0) 'width': probe['width'],
