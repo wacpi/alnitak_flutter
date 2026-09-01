@@ -128,12 +128,14 @@ class UploadApiService {
           tag: 'CoverProbe');
       // 静音打开播放器，仅用于截封面帧：
       // - muted=true 只把音量设为0, 但 AudioTrack 音频输出仍会初始化并"叮"一声
-      // - 故再传 options:{'ao':'null'} 在 mpv_initialize 前禁用音频输出驱动,
-      //   彻底不创建真实 AudioTrack, 消除选中视频时的提示音; 截图(视频帧)不受影响
+      // - options:{'ao':'null'} 在 mpv_initialize 前禁用音频输出驱动, 彻底不创建真实 AudioTrack,
+      //   消除选中视频时的提示音
+      // - media_kit 默认 vid=no(不解码视频帧), 导致 screenshot-raw 拿不到帧返回 null;
+      //   options:{'vid':'auto'} 开启视频解码(覆盖默认 vid=no), 截图(视频帧) 才能成功
       player = Player(
         configuration: PlayerConfiguration(
           muted: true,
-          options: const {'ao': 'null'},
+          options: const {'ao': 'null', 'vid': 'auto'},
         ),
       );
       await player.open(Media(file.path));
