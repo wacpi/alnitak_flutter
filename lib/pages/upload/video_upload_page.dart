@@ -198,6 +198,9 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
             widget.initialCover!.isNotEmpty) {
           _coverUrl = widget.initialCover;
         }
+        LoggerService.instance.logInfo(
+            '[封面上传] _loadVideoData 回显 cover_status=${videoStatus.cover} initialCover=${widget.initialCover} 最终_coverUrl=$_coverUrl',
+            tag: 'CoverProbe');
         _resources = videoStatus.resources; // 加载资源列表
 
         // 设置分区
@@ -364,6 +367,9 @@ Future<void> _uploadVideo({String? title}) async {
       final vid = videoInfo['vid']?.toString();
       // 自动抽帧上传的封面URL（若成功），传给编辑页作为本稿默认封面回显
       final coverUrl = videoInfo['coverUrl'] as String?;
+      LoggerService.instance.logInfo(
+          '[封面上传] _uploadVideo 拿到 videoInfo keys=${videoInfo.keys.toList()} coverUrl=$coverUrl',
+          tag: 'CoverProbe');
 
       // 【新增】上传成功后清理当前视频临时文件
       if (_videoFile != null) {

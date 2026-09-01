@@ -6,6 +6,7 @@ import 'package:path/path.dart' as path;
 import 'package:media_kit/media_kit.dart';
 import '../models/upload_state.dart';
 import '../utils/http_client.dart';
+import 'logger_service.dart';
 
 /// 上传API服务 - 参考PC端实现
 ///
@@ -122,9 +123,19 @@ class UploadApiService {
 
     late final Player player;
     try {
-      // 静音打开播放器，仅用于截封面帧：避免选中视频后初始化音频输出而"叮"一声，
-      // 同时保留 seek + screenshot 截图能力
-      player = Player(configuration: const PlayerConfiguration(muted: true));
+      LoggerService.instance.logInfo(
+          '[封面探测] 开始静音打开播放器 file=${file.path}',
+          tag: 'CoverProbe');
+      // 静音打开播放器，仅用于截封面帧：
+      // - muted=true 只把音量设为0, 但 AudioTrack 音频输出仍会初始化并"叮"一声
+      // - 故再传 options:{'ao':'null'} 在 mpv_initialize 前禁用音频输出驱动,
+      //   彻底不创建真实 AudioTrack, 消除选中视频时的提示音; 截图(视频帧)不受影响
+      player = Player(
+        configuration: PlayerConfiguration(
+          muted: true,
+          options: const {'ao': 'null'},
+        ),
+      );
       await player.open(Media(file.path));
 
       await Future.delayed(const Duration(milliseconds: 500));
@@ -143,9 +154,17 @@ class UploadApiService {
         final coverFile = File('${tempDir.path}/cover_${DateTime.now().millisecondsSinceEpoch}.jpg');
         await coverFile.writeAsBytes(screenshotBytes);
         result['coverPath'] = coverFile.path;
+        LoggerService.instance.logInfo(
+            '[封面探测] 截帧成功 bytes=${screenshotBytes.length} coverPath=${coverFile.path} duration=${result['duration']}',
+            tag: 'CoverProbe');
+      } else {
+        LoggerService.instance.logWarning(
+            '[封面探测] screenshot 返回空, 截帧失败 duration=${result['duration']}',
+            tag: 'CoverProbe');
       }
     } catch (e) {
       // 截封面失败不影响上传
+      LoggerService.instance.logWarning('[封面探测] 异常: $e', tag: 'CoverProbe');
     } finally {
       try { await player.dispose(); } catch (_) {}
     }
@@ -209,15 +228,26 @@ class UploadApiService {
           final coverFile = File(coverPath);
           if (await coverFile.exists()) {
             autoCoverUrl = await uploadImage(coverFile);
+            LoggerService.instance.logInfo(
+                '[封面上传] 抽帧封面上传成功 autoCoverUrl=$autoCoverUrl',
+                tag: 'CoverProbe');
             // 上传完成后清理临时封面文件
             try {
               await coverFile.delete();
             } catch (_) {}
+          } else {
+            LoggerService.instance.logWarning(
+                '[封面上传] 截帧文件不存在 coverPath=$coverPath', tag: 'CoverProbe');
           }
         } catch (e) {
           // 封面抽帧/上传失败不影响视频上传
           autoCoverUrl = null;
+          LoggerService.instance.logWarning(
+              '[封面上传] 失败: $e coverPath=$coverPath', tag: 'CoverProbe');
         }
+      } else {
+        LoggerService.instance.logWarning(
+            '[封面上传] probe 无 coverPath, 跳过封面上传', tag: 'CoverProbe');
       }
 
       if (instantUpload) {
@@ -621,6 +651,9 @@ static Future<Map<String, dynamic>> _getVideoInfo({required String fileID, requi
     final data = response.data as Map<String, dynamic>;
     if (data['code'] == 200) {
       final resource = data['data']['resource'] as Map<String, dynamic>;
+      LoggerService.instance.logInfo(
+          '[封面上传] _getVideoInfo 完成 endpoint=$endpoint cover=$cover',
+          tag: 'CoverProbe');
       // 把自动抽帧的封面 URL 一并返回，供上层回显到封面选择区域（作为本稿默认封面）
       if (cover != null && cover.isNotEmpty) {
         resource['coverUrl'] = cover;
