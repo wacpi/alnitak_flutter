@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
+import '../services/logger_service.dart';
 
 /// Token 安全管理器（单例）
 ///
@@ -90,8 +91,18 @@ class TokenManager extends ChangeNotifier {
         } else {
           // 校验失败，可能被篡改，清除
           _logSafe('Token 完整性校验失败，已清除');
+          _logCritical('Token 完整性校验失败，已清除本地 token',
+            {'encodedTokenPresent': encodedToken.isNotEmpty, 'encodedRefreshPresent': encodedRefresh != null && encodedRefresh.isNotEmpty,
+             'storedChecksum': storedChecksum, 'currentChecksum': currentChecksum});
           await _clearStorage();
         }
+      } else {
+        // 【诊断】token 读不到：是真没存，还是安全存储读取失败/损坏？
+        // 有 refresh 无 token（或相反）也能证明存储层行为异常（登录时是无条件一起存的）。
+        _logCritical('启动时未读取到登录态（安全存储无 token 或检查和相关数据缺失）',
+          {'encodedTokenPresent': encodedToken != null, 'encodedRefreshPresent': encodedRefresh != null,
+           'storedChecksumPresent': storedChecksum != null,
+           'encodedTokenEmpty': encodedToken != null && encodedToken.isEmpty});
       }
 
       // 2) 安全存储无数据 → 尝试从 SharedPreferences 迁移
@@ -104,6 +115,10 @@ class TokenManager extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       _logSafe('Token 管理器初始化失败: $e');
+      _logCritical('启动读取安全存储异常，导致登录态未恢复', {
+        'exception': e.toString(),
+        'runtimeType': e.runtimeType.toString(),
+      });
       _isInitialized = true;
     }
   }
@@ -206,6 +221,11 @@ class TokenManager extends ChangeNotifier {
   /// Token 过期处理（自动退出登录）
   Future<void> handleTokenExpired() async {
     _logSafe('Token 已过期，执行自动退出');
+    // 【诊断】记录触发自动登出时的本地状态：refresh 是否尚在 / 是否 refreshToken 本就缺失
+    _logCritical('Token 已过期，执行自动登出（清除本地 token）', {
+      'hadToken': _cachedToken != null && _cachedToken!.isNotEmpty,
+      'hadRefreshToken': _cachedRefreshToken != null && _cachedRefreshToken!.isNotEmpty,
+    });
     await clearTokens();
     _onTokenExpired?.call();
   }
@@ -316,6 +336,20 @@ class TokenManager extends ChangeNotifier {
       // ignore: avoid_print
       debugPrint('[TokenManager] $message');
     }
+  }
+
+  /// 关键路径日志：即使 Release 也写入 error_log.txt 并上报服务端。
+  /// 仅用于「登录状态异常/丢失」这类必须可观测的诊断点，不打印 token 明文。
+  /// 通过 LoggerService 绕开 debug-only 的 debugPrint，保证 Release 真机可抓。
+  void _logCritical(String message, [Map<String, dynamic>? context]) async {
+    if (kDebugMode) {
+      // ignore: avoid_print
+      debugPrint('[TokenManager][CRIT] $message ${context ?? {}}');
+    }
+    unawaited(LoggerService.instance.logError(
+      message: '[TokenManager] $message',
+      context: context,
+    ));
   }
 
   /// 获取脱敏的 Token（用于调试）

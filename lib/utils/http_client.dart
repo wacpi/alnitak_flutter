@@ -82,6 +82,13 @@ class HttpClient {
         tm.markRefreshFailed();
         await tm.handleTokenExpired();
         completer.complete(null);
+        LoggerService.instance.logError(
+          message: '[Auth][refreshToken] 触发自动登出：refreshToken 为空',
+          context: {
+            'hadToken': tm.token != null && tm.token!.isNotEmpty,
+            'cameFromOnResponse3000': true,
+          },
+        );
         return null;
       }
 
@@ -102,12 +109,27 @@ class HttpClient {
       }
 
       tm.markRefreshFailed();
-      if (resp.data['code'] == 2000) await tm.handleTokenExpired();
+      if (resp.data['code'] == 2000) {
+        await tm.handleTokenExpired();
+        LoggerService.instance.logError(
+          message: '[Auth][refreshToken] 服务端拒绝刷新(code=2000)，触发自动登出',
+          context: {'respCode': resp.data['code'], 'respMsg': resp.data['msg']?.toString()},
+        );
+      } else {
+        LoggerService.instance.logError(
+          message: '[Auth][refreshToken] 刷新失败但未清除 token（仅冷却）',
+          context: {'respCode': resp.data['code'], 'respMsg': resp.data['msg']?.toString()},
+        );
+      }
       completer.complete(null);
       return null;
     } catch (_) {
       tm.markRefreshFailed();
       completer.complete(null);
+      LoggerService.instance.logError(
+        message: '[Auth][refreshToken] 刷新请求网络异常，仅冷却未清 token',
+        context: {'hadToken': tm.token != null && tm.token!.isNotEmpty},
+      );
       return null;
     } finally {
       tm.setRefreshing(false, null);
