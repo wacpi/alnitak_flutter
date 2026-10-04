@@ -65,7 +65,8 @@ class _VideoResourceListState extends State<VideoResourceList> {
   void dispose() {
     // 【新增】清理队列临时文件
     _cleanupQueueFiles().catchError((e) {
-      LoggerService.instance.logWarning('清理上传队列文件失败: $e', tag: 'VideoResourceList');
+      LoggerService.instance
+          .logWarning('清理上传队列文件失败: $e', tag: 'VideoResourceList');
     });
 
     _titleEditController.dispose();
@@ -74,21 +75,22 @@ class _VideoResourceListState extends State<VideoResourceList> {
 
   /// 清理上传队列中的临时文件
   Future<void> _cleanupQueueFiles() async {
-
     for (final task in _uploadQueue) {
       try {
         if (await task.file.exists()) {
           await task.file.delete();
         }
       } catch (e) {
-        LoggerService.instance.logWarning('清理队列任务文件失败: $e', tag: 'VideoResourceList');
+        LoggerService.instance
+            .logWarning('清理队列任务文件失败: $e', tag: 'VideoResourceList');
       }
     }
 
     try {
       await FilePicker.platform.clearTemporaryFiles();
     } catch (e) {
-      LoggerService.instance.logWarning('清理 FilePicker 临时文件失败: $e', tag: 'VideoResourceList');
+      LoggerService.instance
+          .logWarning('清理 FilePicker 临时文件失败: $e', tag: 'VideoResourceList');
     }
   }
 
@@ -132,7 +134,6 @@ class _VideoResourceListState extends State<VideoResourceList> {
       }
     }
 
-
     // 开始处理队列
     _processUploadQueue();
   }
@@ -143,7 +144,8 @@ class _VideoResourceListState extends State<VideoResourceList> {
 
     _isProcessingQueue = true;
 
-    while (_uploadQueue.any((task) => !task.isCompleted && !task.isFailed && !task.isUploading)) {
+    while (_uploadQueue.any(
+        (task) => !task.isCompleted && !task.isFailed && !task.isUploading)) {
       // 找到下一个待上传的任务
       final taskIndex = _uploadQueue.indexWhere(
         (task) => !task.isCompleted && !task.isFailed && !task.isUploading,
@@ -158,7 +160,6 @@ class _VideoResourceListState extends State<VideoResourceList> {
       });
 
       try {
-
         final videoInfo = await UploadApiService.uploadVideo(
           file: task.file,
           filename: task.fileName,
@@ -174,7 +175,7 @@ class _VideoResourceListState extends State<VideoResourceList> {
         );
 
         // 上传成功，添加到资源列表
-final newResource = VideoResource(
+        final newResource = VideoResource(
           id: videoInfo['id']?.toString() ?? '',
           title: videoInfo['title'] as String? ?? task.fileName,
           vid: widget.vid,
@@ -188,7 +189,8 @@ final newResource = VideoResource(
             await task.file.delete();
           }
         } catch (e) {
-          LoggerService.instance.logWarning('上传后清理任务文件失败: $e', tag: 'VideoResourceList');
+          LoggerService.instance
+              .logWarning('上传后清理任务文件失败: $e', tag: 'VideoResourceList');
         }
 
         if (mounted) {
@@ -313,7 +315,8 @@ final newResource = VideoResource(
       builder: (context) => AlertDialog(
         backgroundColor: colors.card,
         title: Text('确认删除', style: TextStyle(color: colors.textPrimary)),
-        content: Text('是否移除该条视频？', style: TextStyle(color: colors.textSecondary)),
+        content:
+            Text('是否移除该条视频？', style: TextStyle(color: colors.textSecondary)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -348,7 +351,7 @@ final newResource = VideoResource(
     }
   }
 
-/// 显示错误提示
+  /// 显示错误提示
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.red),
@@ -423,7 +426,8 @@ final newResource = VideoResource(
               Positioned(
                 bottom: 2,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                   decoration: BoxDecoration(
                     color: Colors.blue,
                     borderRadius: BorderRadius.circular(2),
@@ -469,7 +473,9 @@ final newResource = VideoResource(
                           : GestureDetector(
                               onTap: () => _startEditTitle(index),
                               child: Text(
-                                resource.title.isEmpty ? '未命名视频' : resource.title,
+                                resource.title.isEmpty
+                                    ? '未命名视频'
+                                    : resource.title,
                                 style: const TextStyle(fontSize: 14),
                               ),
                             ),
@@ -503,6 +509,8 @@ final newResource = VideoResource(
                     LinearProgressIndicator(
                       value: 1.0,
                       backgroundColor: Colors.grey[200],
+                      valueColor:
+                          const AlwaysStoppedAnimation<Color>(Colors.blue),
                     ),
                   ],
                 ),
@@ -539,7 +547,8 @@ final newResource = VideoResource(
                   Positioned(
                     bottom: 2,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 2),
                       decoration: BoxDecoration(
                         color: Colors.blue,
                         borderRadius: BorderRadius.circular(2),
@@ -583,7 +592,9 @@ final newResource = VideoResource(
                               : GestureDetector(
                                   onTap: () => _startEditTitle(index),
                                   child: Text(
-                                    resource.title.isEmpty ? '未命名视频' : resource.title,
+                                    resource.title.isEmpty
+                                        ? '未命名视频'
+                                        : resource.title,
                                     style: const TextStyle(fontSize: 14),
                                   ),
                                 ),
@@ -592,7 +603,8 @@ final newResource = VideoResource(
                           TextButton(
                             onPressed: () => _deleteResource(index),
                             style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
                               minimumSize: const Size(0, 32),
                             ),
                             child: const Text(
@@ -617,6 +629,8 @@ final newResource = VideoResource(
                         LinearProgressIndicator(
                           value: 1.0,
                           backgroundColor: Colors.grey[200],
+                          valueColor:
+                              const AlwaysStoppedAnimation<Color>(Colors.blue),
                         ),
                       ],
                     ),
@@ -685,21 +699,28 @@ final newResource = VideoResource(
                           ),
                           const SizedBox(height: 8),
                           if (task.isUploading) ...[
-                            LinearProgressIndicator(value: task.progress),
+                            LinearProgressIndicator(
+                              value: task.progress,
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                  Colors.blue),
+                            ),
                             const SizedBox(height: 4),
                             Text(
                               '上传中 ${(task.progress * 100).toStringAsFixed(0)}%',
-                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.grey),
                             ),
                           ] else if (task.isFailed) ...[
                             Text(
                               '上传失败',
-                              style: TextStyle(fontSize: 12, color: Colors.red[600]),
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.red[600]),
                             ),
                           ] else ...[
                             Text(
                               '等待上传...',
-                              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.grey[600]),
                             ),
                           ],
                         ],
@@ -741,7 +762,8 @@ final newResource = VideoResource(
               );
             },
             itemBuilder: (context, index) {
-              return _buildResourceItem(key: ValueKey(_resources[index].id), index: index);
+              return _buildResourceItem(
+                  key: ValueKey(_resources[index].id), index: index);
             },
           )
         else
