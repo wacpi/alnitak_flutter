@@ -158,7 +158,6 @@ class VideoPlayerController extends ChangeNotifier {
   DateTime? _lastPlaybackBackwardLogAt;
   static const int _bufferingSustainMs = 1500;
   static const int _videoEndDebounceMs = 800;
-  static const int _startupReadyTimeoutMs = 1500;
   static const int _playbackPositionGuardMs = 2000;
   static const int _spuriousBackwardJumpMs = 1600;
 
@@ -187,6 +186,14 @@ class VideoPlayerController extends ChangeNotifier {
   Timer? _dashRefreshTimer;
   bool _cacheRangeLookupInFlight = false;
   int _cacheRangeLookupGeneration = 0;
+
+  /// 最近一次成功解析出的音视频共同缓存区间右端点（绝对时间轴秒）。
+  /// 作用会话内粘性权威终点（sticky）：后续查询失败时钳制兜底，
+  /// 保证缓冲条既不因查询失败而塌缩消失，也绝不超前到真实音视频共同缓存之外。
+  double _lastAuthoritativeMediaCacheRangeEndSeconds = 0;
+
+  /// 本会话是否已成功解析过至少一次权威音视频共同缓存终点。
+  bool _hasAuthoritativeMediaCacheRangeThisSession = false;
   bool _dashTokenRefreshed = false;
 
   VideoPlayerController() {
@@ -372,8 +379,11 @@ class VideoPlayerController extends ChangeNotifier {
       onSeek: (pos) => seek(pos),
     );
 
-    await _audioFocus.init();
-    await _configurePlayerOnce(decodeMode);
+    // 音频会话初始化与 mpv 属性配置互不依赖，串行会直接增加冷启动时延。
+    await Future.wait([
+      _audioFocus.init(),
+      _configurePlayerOnce(decodeMode),
+    ]);
 
     _videoController = VideoController(
       _player!,
@@ -453,6 +463,8 @@ class VideoPlayerController extends ChangeNotifier {
   }) async {
     if (_isDisposed) return;
     final sessionId = _nextPlaybackSessionId();
+    // 仅在本次确实申请过音频焦点时，才在失败路径归还，避免误释放前一次会话持有的焦点。
+    var audioFocusActivated = false;
 
     try {
       isLoading.value = true;
@@ -502,6 +514,12 @@ class VideoPlayerController extends ChangeNotifier {
       }
 
       await _applyStreamModeProperties(dataSource.nativeMpd);
+      // 先申请音频焦点，再让 mpv 在打开媒体时立即播放。以前 open(play: false)
+      // 后额外等 1.5s 的“首帧就绪”闸门会让本地/已缓存视频也无谓延迟。
+      if (shouldPlayAfterStable) {
+        await _audioFocus.activate();
+        audioFocusActivated = true;
+      }
       final openSw = Stopwatch()..start();
       _mpvTrace('player.open() begin (nativeMpd=${dataSource.nativeMpd})');
 
@@ -512,7 +530,7 @@ class VideoPlayerController extends ChangeNotifier {
           extras: extras,
           httpHeaders: dataSource.httpHeaders,
         ),
-        play: false,
+        play: shouldPlayAfterStable,
       );
       openSw.stop();
       _mpvTrace('player.open() returned (${openSw.elapsedMilliseconds}ms)');
@@ -525,17 +543,12 @@ class VideoPlayerController extends ChangeNotifier {
 
       _startDashRefreshTimer();
 
-      if (shouldPlayAfterStable && !_isDisposed) {
-        await _waitForVideoReadyBeforePlay(sessionId);
-        if (!_isSessionActive(sessionId)) return;
-        await play();
-        if (_isSessionActive(sessionId)) {
-          _armPlaybackPositionGuard(seekTo);
-        }
-      }
-
       unawaited(_syncExternalSubtitleTracks(sessionId));
     } catch (e) {
+      // 音频焦点在 open 之前已申请，失败时必须归还，否则会一直占用到 pause()。
+      if (audioFocusActivated) {
+        await _audioFocus.deactivate();
+      }
       if (!_isSessionActive(sessionId)) return;
       _isSeeking = false;
       isLoading.value = false;
@@ -728,13 +741,21 @@ class VideoPlayerController extends ChangeNotifier {
       final sessionId = _playbackSessionId;
       final lookupGeneration = ++_cacheRangeLookupGeneration;
       _cacheRangeLookupInFlight = true;
-      _tryGetVideoCacheRangeEndSeconds().then((rangeEnd) {
-        if (_isDisposed || _player != player || !_isSessionActive(sessionId)) {
+      _tryGetOverallCacheRangeEndSeconds().then((rangeEnd) {
+        if (_isDisposed ||
+            _player != player ||
+            !_isSessionActive(sessionId) ||
+            _cacheRangeLookupGeneration != lookupGeneration) {
           return;
         }
+        // 成功解析出音视频共同缓存终点后，作为本会话内的权威终点（sticky 锚），
+        // 供后续查询失败时做钳制上界，保证条既不塌缩消失也不超前。
+        _lastAuthoritativeMediaCacheRangeEndSeconds = rangeEnd.toDouble();
+        _hasAuthoritativeMediaCacheRangeThisSession = true;
         _applyBufferedBarEnd(_player!, cacheRangeEnd: rangeEnd);
       }).whenComplete(() {
-        // 较旧数据源的查询不能解除新数据源查询的在途标记。
+        // 仅允许当前查询解除自己的单飞守卫。旧会话的异步回调不能把新
+        // 查询误标记为完成，否则会并发堆积 platform round-trip。
         if (_cacheRangeLookupGeneration == lookupGeneration) {
           _cacheRangeLookupInFlight = false;
         }
@@ -745,14 +766,34 @@ class VideoPlayerController extends ChangeNotifier {
   void _applyBufferedBarEnd(Player player, {required int cacheRangeEnd}) {
     final pos = player.state.position.inSeconds;
     final dur = player.state.duration.inSeconds;
-    // media_kit 的 state.buffer 映射 mpv demuxer-cache-time，是“从当前播放点
-    // 往后的缓存时长”而不是时间轴上的绝对终点。demuxer-cache-state 的 range
-    // 则是绝对时间轴，因此两者必须分别换算后取较大值。
-    final endFromBufferedDuration = pos + player.state.buffer.inSeconds;
-    var endAbs = math.max(pos, endFromBufferedDuration);
-    endAbs = math.max(endAbs, cacheRangeEnd);
+    // demuxer-cache-state 的权威值是“当前音视频共同可播放”的绝对终点。
+    // 音画任何一条未就绪都不应被绘制为已缓冲。
+    var endAbs = cacheRangeEnd;
+    var source = 'audioVideoIntersection';
+    if (endAbs <= 0) {
+      // media_kit 的 state.buffer 直接映射 mpv demuxer-cache-time，即最后
+      // 一帧缓存数据的“绝对时间戳”而非“从当前位置起的时长”。mpv 官方也
+      // 标注此值只是猜测，因此仅在权威 cache-state 缺失时作为显示兜底。
+      endAbs = player.state.buffer.inSeconds;
+      source = 'approximateCacheTimeFallback';
+    }
+    if (endAbs <= pos &&
+        _hasAuthoritativeMediaCacheRangeThisSession &&
+        _lastAuthoritativeMediaCacheRangeEndSeconds > pos) {
+      // 最近一次的权威共同终点可防止短暂查询失败时缓冲条塌缩。
+      endAbs = _lastAuthoritativeMediaCacheRangeEndSeconds.ceil();
+      source = 'stickyClamp';
+    } else if (endAbs <= pos) {
+      source = 'collapsedToPosition';
+    }
+    endAbs = math.max(pos, endAbs);
     if (dur > 0) {
       endAbs = math.min(endAbs, dur);
+    }
+    if (_enableMpvTrace) {
+      _logger.logDebug('[DASH缓存] 应用决策=$source pos=$pos '
+          '入参=$cacheRangeEnd sticky=$_lastAuthoritativeMediaCacheRangeEndSeconds '
+          '-> 终点=$endAbs 秒');
     }
     _updateNotifierValue(bufferedSeconds, endAbs);
   }
@@ -830,7 +871,9 @@ class VideoPlayerController extends ChangeNotifier {
         if (!_isSessionActive(sessionId) ||
             _isDisposed ||
             _isDisposing ||
-            _isSeeking) return;
+            _isSeeking) {
+          return;
+        }
         final guard = _playbackPositionGuardUntil;
         if (guard != null &&
             DateTime.now().isBefore(guard) &&
@@ -917,10 +960,14 @@ class VideoPlayerController extends ChangeNotifier {
         // 原生 DASH MPD：mpv 自动选轨只比较分辨率/码率，同分辨率同码率存在
         // 30/60fps 多轨时固定取流顺序第一条（30fps），不会读取保存的帧率偏好。
         // 轨道首次就绪时按 currentQuality（已解析用户保存偏好）重新应用轨道。
-        if (_preferredQualityAppliedForSession) return;
+        if (_preferredQualityAppliedForSession) {
+          return;
+        }
         if (!_supportsDash ||
             _manifest?.mpdUrl == null ||
-            _manifest?.supportsNativeQualitySwitching != true) return;
+            _manifest?.supportsNativeQualitySwitching != true) {
+          return;
+        }
         final quality = currentQuality.value;
         if (quality == null || quality.isEmpty) return;
 
@@ -1112,6 +1159,10 @@ class VideoPlayerController extends ChangeNotifier {
     _playbackPositionGuardAnchor = Duration.zero;
     _lastReportedPosition = Duration.zero;
     _lastPtsLoggedSecond = -1;
+    _cacheRangeLookupInFlight = false;
+    _cacheRangeLookupGeneration++;
+    _lastAuthoritativeMediaCacheRangeEndSeconds = 0;
+    _hasAuthoritativeMediaCacheRangeThisSession = false;
     _playbackLog('resetPlaybackStates session=$_playbackSessionId');
   }
 
@@ -1228,61 +1279,6 @@ class VideoPlayerController extends ChangeNotifier {
     if (notifier.value != newValue) notifier.value = newValue;
   }
 
-  Future<void> _waitForVideoReadyBeforePlay(int sessionId) async {
-    if (_player == null) return;
-    _mpvTrace(
-      '_waitForVideoReadyBeforePlay begin (w=${_player?.state.width}, '
-      'h=${_player?.state.height}, buf=${_player?.state.buffer.inMilliseconds}ms)',
-    );
-    final waitSw = Stopwatch()..start();
-    final completer = Completer<void>();
-    final subs = <StreamSubscription>[];
-
-    void tryComplete() {
-      if (completer.isCompleted || !_isSessionActive(sessionId)) return;
-      final w = _player?.state.width ?? 0;
-      final h = _player?.state.height ?? 0;
-      final bufMs = _player?.state.buffer.inMilliseconds ?? 0;
-      if ((w > 0 && h > 0 && bufMs >= 1200) || bufMs >= 2500) {
-        if (!completer.isCompleted) completer.complete();
-      }
-    }
-
-    subs.add(_player!.stream.width.listen((_) => tryComplete()));
-    subs.add(_player!.stream.height.listen((_) => tryComplete()));
-    subs.add(_player!.stream.buffer.listen((_) => tryComplete()));
-
-    final timeout = Timer(Duration(milliseconds: _startupReadyTimeoutMs), () {
-      if (!completer.isCompleted) completer.complete();
-    });
-
-    tryComplete();
-    await completer.future;
-    timeout.cancel();
-    for (final sub in subs) {
-      sub.cancel();
-    }
-    waitSw.stop();
-    _mpvTrace(
-      '_waitForVideoReadyBeforePlay done (${waitSw.elapsedMilliseconds}ms, '
-      'w=${_player?.state.width}, h=${_player?.state.height}, '
-      'buf=${_player?.state.buffer.inMilliseconds}ms)',
-    );
-
-    if (_videoController != null && _isSessionActive(sessionId)) {
-      try {
-        final frameSw = Stopwatch()..start();
-        await _videoController!.waitUntilFirstFrameRendered
-            .timeout(const Duration(milliseconds: 1200));
-        frameSw.stop();
-        _mpvTrace(
-            'waitUntilFirstFrameRendered done (${frameSw.elapsedMilliseconds}ms)');
-      } catch (_) {
-        // 首帧渲染超时是正常情况（软解/慢速网络），无须处理
-      }
-    }
-  }
-
   Future<void> _handleStalled() async {
     await _enqueueOperation(() async {
       if (_isHandlingStall ||
@@ -1290,12 +1286,18 @@ class VideoPlayerController extends ChangeNotifier {
           isLoading.value ||
           isSwitchingQuality.value ||
           _isSeeking ||
-          _seekInFlight) return;
+          _seekInFlight) {
+        return;
+      }
       if (_lastSeekAt != null &&
-          DateTime.now().difference(_lastSeekAt!).inSeconds < 4) return;
+          DateTime.now().difference(_lastSeekAt!).inSeconds < 4) {
+        return;
+      }
       if (_currentResourceId == null ||
           currentQuality.value == null ||
-          _player == null) return;
+          _player == null) {
+        return;
+      }
 
       _isHandlingStall = true;
       try {
@@ -1385,6 +1387,9 @@ class VideoPlayerController extends ChangeNotifier {
     if (match == null) return false;
 
     await player.setVideoTrack(match);
+    // 使切轨前发起的缓存查询失效，避免旧视频轨的结果回写当前缓存条。
+    _cacheRangeLookupGeneration++;
+    _cacheRangeLookupInFlight = false;
     _playbackLog(
         '[DASH] 切换视频轨到清晰度 $quality (track id=${match.id}, h=${match.h})');
     return true;
@@ -1437,8 +1442,9 @@ class VideoPlayerController extends ChangeNotifier {
         _streamService.clearManifestCache(_currentResourceId!);
         _manifest = await _streamService.getDashManifest(_currentResourceId!);
         _manifestLine = NetworkLineSelector().selectedLine;
-        if (_isDisposed || _player == null || _currentResourceId == null)
+        if (_isDisposed || _player == null || _currentResourceId == null) {
           return;
+        }
         final quality = currentQuality.value;
         if (quality == null) return;
         final ds = _manifest!.getDataSource(
@@ -1556,22 +1562,181 @@ class VideoPlayerController extends ChangeNotifier {
     }
   }
 
-  /// 从 demuxer-cache-state 解析视频缓存区间右端点（时间轴绝对秒数，失败返回 0）
-  Future<int> _tryGetVideoCacheRangeEndSeconds() async {
+  /// 从 demuxer-cache-state 解析音视频共同缓存区间右端点（绝对秒数，失败返回 0）。
+  ///
+  /// 可播放缓冲不是任意一轨的最大缓存：音频和视频都覆盖当前位置的区间，
+  /// 其较小终点才是用户实际能够连续播放到的位置。
+  Future<int> _tryGetOverallCacheRangeEndSeconds() async {
     try {
       final cacheStr = await _player!.getProperty('demuxer-cache-state');
+      if (_enableMpvTrace) {
+        _logger.logDebug('[DASH缓存] demuxer-cache-state 原始输出: $cacheStr');
+      }
       if (cacheStr.isEmpty) return 0;
-      final videoRangeMatch = RegExp(r'video\[\d+\]:\s*([\d.]+)\s*-\s*([\d.]+)',
-              caseSensitive: false)
-          .firstMatch(cacheStr);
-      if (videoRangeMatch != null) {
-        final end = double.tryParse(videoRangeMatch.group(2) ?? '') ?? 0.0;
-        if (end > 0) return end.ceil();
+      final positionSeconds =
+          (_player?.state.position.inMilliseconds.toDouble() ?? 0) /
+              Duration.millisecondsPerSecond;
+      final structuredEnd = _parseMpvCacheStateEnd(
+        cacheStr,
+        positionSeconds: positionSeconds,
+      );
+      if (structuredEnd != null && structuredEnd > positionSeconds) {
+        return structuredEnd.ceil();
+      }
+
+      // 兼容旧版 libmpv 将 NODE 格式化为 "video[0]: start - end" 文本的情况。
+      final videoEnd = _cacheRangeEndCoveringPosition(
+        cacheStr,
+        mediaType: 'video',
+        positionSeconds: positionSeconds,
+      );
+      if (videoEnd == null) return 0;
+      final audioEnd = _cacheRangeEndCoveringPosition(
+        cacheStr,
+        mediaType: 'audio',
+        positionSeconds: positionSeconds,
+      );
+      // 无音频资源只用视频；有音频时取两者交集，绝不以单轨冒充总体缓冲。
+      final end = audioEnd == null ? videoEnd : math.min(videoEnd, audioEnd);
+      if (end.isFinite && end > positionSeconds) {
+        if (_enableMpvTrace) {
+          _logger.logDebug('[DASH缓存] 解析共同终点=$end 秒 '
+              '(video=$videoEnd, audio=$audioEnd, ceil=${end.ceil()})');
+        }
+        return end.ceil();
+      }
+      if (_enableMpvTrace) {
+        _logger.logDebug('[DASH缓存] 未解析到覆盖当前位置的音视频共同区间，'
+            '判定查询失败 (end=$end)');
       }
     } catch (e) {
-      _logger.logDebug('获取视频缓冲区间失败: $e');
+      _logger.logDebug('获取整体缓冲区间失败: $e');
     }
     return 0;
+  }
+
+  /// 解析 mpv 官方 demuxer-cache-state 的 NODE/JSON 表示。
+  ///
+  /// 优先使用 ts-per-stream 的 video/audio cache-end：两者存在时取较小值，
+  /// 才能表示音画连续可播放的总体缓冲；无单轨详情时才使用 main demuxer 的
+  /// seekable-ranges，它表示真正可用于缓存 seek 的连续区间。
+  double? _parseMpvCacheStateEnd(
+    String raw, {
+    required double positionSeconds,
+  }) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+
+      final streams = decoded['ts-per-stream'];
+      final videoEnd = _streamCacheEnd(streams, 'video');
+      if (videoEnd != null) {
+        final audioEnd = _streamCacheEnd(streams, 'audio');
+        final activeAudio = _player?.state.track.audio.id != 'no';
+        // 有活动音轨却拿不到它的时间戳时，不能把 video 单轨缓存当总体缓存。
+        // 此时继续尝试 main demuxer 的 seekable-ranges；仍不可用则交给近似值兜底。
+        if (!activeAudio || audioEnd != null) {
+          return audioEnd == null ? videoEnd : math.min(videoEnd, audioEnd);
+        }
+      }
+
+      final ranges = decoded['seekable-ranges'];
+      if (ranges is List) {
+        return _continuousSeekableRangeEnd(ranges, positionSeconds);
+      }
+    } catch (_) {
+      // 某些 libmpv 版本会把 NODE 转成展示文本，随后走下方正则兼容路径。
+    }
+    return null;
+  }
+
+  double? _streamCacheEnd(dynamic streams, String mediaType) {
+    dynamic stream;
+    if (streams is Map) {
+      stream = streams[mediaType];
+      if (stream == null) {
+        for (final entry in streams.values) {
+          if (entry is Map &&
+              (entry['type'] == mediaType ||
+                  entry['stream-type'] == mediaType)) {
+            stream = entry;
+            break;
+          }
+        }
+      }
+    } else if (streams is List) {
+      for (final entry in streams) {
+        if (entry is Map &&
+            (entry['type'] == mediaType || entry['stream-type'] == mediaType)) {
+          stream = entry;
+          break;
+        }
+      }
+    }
+    if (stream is! Map) return null;
+    final value = stream['cache-end'];
+    return value is num && value.isFinite ? value.toDouble() : null;
+  }
+
+  /// 合并覆盖当前播放位置且首尾相连/重叠的 seekable-ranges，得到真正连续
+  /// 可 seek 的缓存末端。mpv 官方说明 ranges 可能无序且会暂时重叠。
+  double? _continuousSeekableRangeEnd(List<dynamic> ranges, double position) {
+    final parsed = <(double start, double end)>[];
+    for (final range in ranges) {
+      if (range is! Map) continue;
+      final start = range['start'];
+      final end = range['end'];
+      if (start is num &&
+          end is num &&
+          start.isFinite &&
+          end.isFinite &&
+          end >= start) {
+        parsed.add((start.toDouble(), end.toDouble()));
+      }
+    }
+    parsed.sort((a, b) => a.$1.compareTo(b.$1));
+    double? continuousEnd;
+    for (final range in parsed) {
+      if (continuousEnd == null) {
+        if (range.$1 <= position + 0.25 && range.$2 >= position - 0.25) {
+          continuousEnd = range.$2;
+        }
+      } else if (range.$1 <= continuousEnd + 0.25) {
+        continuousEnd = math.max(continuousEnd, range.$2);
+      } else {
+        break;
+      }
+    }
+    return continuousEnd;
+  }
+
+  /// 返回 [mediaType] 在当前位置连续可读的区间右端点；忽略跳转后预读的孤岛，
+  /// 以免把旧片段或未连接的缓存错误地绘制到缓冲条。
+  double? _cacheRangeEndCoveringPosition(
+    String cacheState, {
+    required String mediaType,
+    required double positionSeconds,
+  }) {
+    final ranges = RegExp(
+      '$mediaType\\[\\d+\\]\\s*:\\s*([\\d.]+)\\s*-\\s*([\\d.]+)',
+      caseSensitive: false,
+    ).allMatches(cacheState);
+    double? end;
+    for (final match in ranges) {
+      final start = double.tryParse(match.group(1) ?? '');
+      final candidateEnd = double.tryParse(match.group(2) ?? '');
+      if (start == null ||
+          candidateEnd == null ||
+          !start.isFinite ||
+          !candidateEnd.isFinite ||
+          candidateEnd < start ||
+          start > positionSeconds + 0.25 ||
+          candidateEnd < positionSeconds - 0.25) {
+        continue;
+      }
+      end = end == null ? candidateEnd : math.min(end, candidateEnd);
+    }
+    return end;
   }
 
   Future<void> _logPtsState() async {
